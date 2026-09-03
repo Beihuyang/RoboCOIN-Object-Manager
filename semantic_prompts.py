@@ -1,13 +1,14 @@
-"""Derive compact SAM3 noun prompts from RoboCOIN dataset names."""
+"""Derive deduplicated SAM3 noun prompts from dataset names and text metadata."""
 
 from __future__ import annotations
 
 import re
+import json
 from functools import lru_cache
 from pathlib import Path
 
 
-PROMPT_STRATEGY = "dataset_nouns_v3"
+PROMPT_STRATEGY = "object_dataset_and_episode_meta_nouns_v6"
 DEFAULT_MAX_SEMANTIC_PROMPTS = 6
 
 # Robot/platform identifiers and task grammar are metadata, not visible targets.
@@ -62,6 +63,22 @@ KNOWN_COMPOUNDS = {
 UNKNOWN_TARGETS = {
     "baozi", "bluetooth", "electronics", "nightstand", "rubik", "teaset",
 }
+TEXT_PHYSICAL_TASK_WORDS = {"brush", "scoop", "stamp"}
+TEXT_STOP_WORDS = {
+    "above", "after", "alongside", "another", "around", "back", "before",
+    "behind", "beside", "between", "both", "center", "central", "down", "each",
+    "eight", "end", "five", "focal", "four", "lift", "near", "nine", "one",
+    "point", "rectangle", "round", "same", "section", "serving", "seven",
+    "share", "six", "there", "three", "through", "toward", "two", "under",
+    "upon", "view", "well",
+}
+TEXT_SOURCE_FILES = (
+    "meta/tasks.jsonl",
+    "meta/episodes.jsonl",
+    "annotations/scene_annotations.jsonl",
+    "annotations/subtask_annotations.jsonl",
+    "annotations/subtasks.jsonl",
+)
 PHYSICAL_LEXNAMES = {
     "noun.animal", "noun.artifact", "noun.communication", "noun.food",
     "noun.person", "noun.plant", "noun.shape",
@@ -242,3 +259,167 @@ def discovery_prompts(
         if prompt not in prompts:
             prompts.append(prompt)
     return prompts
+
+
+def semantic_nouns_from_text(text: str) -> list[str]:
+    """Extract physical noun phrases from free text with stable deduplication."""
+    words = [_singular(token) for token in _tokens(text)]
+    phrases: list[str] = []
+    compound_members: set[int] = set()
+
+    def add(value: str) -> None:
+        value = value.strip().replace("_", " ")
+        if value and value not in phrases:
+            phrases.append(value)
+
+    for size in (3, 2):
+        for index in range(len(words) - size + 1):
+            values = words[index:index + size]
+            phrase = " ".join(values)
+            if phrase in KNOWN_COMPOUNDS:
+                add(phrase)
+                compound_members.update(range(index, index + size))
+                continue
+            if any(
+                value in TEXT_STOP_WORDS
+                or value in FUNCTION_WORDS
+                or (value in TASK_WORDS and value not in TEXT_PHYSICAL_TASK_WORDS)
+                or value in NON_TARGET_WORDS
+                for value in values
+            ):
+                continue
+            if _is_wordnet_compound(values):
+                add(phrase)
+                compound_members.update(range(index, index + size))
+
+    for index, word in enumerate(words):
+        if index in compound_members:
+            continue
+        if (
+            word in PLATFORM_WORDS
+            or word in FUNCTION_WORDS
+            or word in GENERIC_WORDS
+            or word in NON_TARGET_WORDS
+            or word in COLOR_AND_SIZE_WORDS
+            or word in TEXT_STOP_WORDS
+            or len(word) <= 2
+        ):
+            continue
+        if word in TASK_WORDS and word not in TEXT_PHYSICAL_TASK_WORDS:
+            continue
+        if _is_target_word(word):
+            add(word)
+    return phrases
+
+
+def _json_strings(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [text for item in value for text in _json_strings(item)]
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _json_strings(item)]
+    return []
+
+
+@lru_cache(maxsize=1024)
+def _dataset_texts(dataset_dir: str) -> tuple[str, ...]:
+    root = Path(dataset_dir)
+    texts = []
+    for relative in TEXT_SOURCE_FILES:
+        path = root / relative
+        if not path.is_file():
+            continue
+        try:
+            with path.open() as handle:
+                for line in handle:
+                    if line.strip():
+                        texts.extend(_json_strings(json.loads(line)))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return tuple(texts)
+
+
+def _deduplicate_compound_nouns(nouns: list[str]) -> list[str]:
+    compound_heads = {value.rsplit(" ", 1)[-1] for value in nouns if " " in value}
+    return [value for value in nouns if " " in value or value not in compound_heads]
+
+
+def all_annotation_noun_prompts(video_path: Path, video_root: Path) -> list[str]:
+    """Return the broad dataset/meta/annotation prompt set used by experiment v5."""
+    dataset_name = dataset_name_from_video(video_path, video_root)
+    dataset_dir = video_root / dataset_name
+    nouns = []
+
+    def add(value: str) -> None:
+        if value and value not in nouns:
+            nouns.append(value)
+
+    for value in semantic_prompts_from_dataset(dataset_name, max_prompts=10_000):
+        add(value)
+    for text in _dataset_texts(str(dataset_dir.resolve())):
+        for value in semantic_nouns_from_text(text):
+            add(value)
+    nouns = _deduplicate_compound_nouns(nouns)
+    if not nouns:
+        raise ValueError(f"No physical nouns found for dataset: {dataset_name}")
+    return nouns
+
+
+def _episode_index_from_video(video_path: Path) -> int | None:
+    match = re.search(r"episode_(\d+)", video_path.stem, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _task_texts_for_episode(dataset_dir: Path, episode_index: int | None) -> list[str]:
+    """Read only explicit task fields, selecting the current episode when possible."""
+    texts: list[str] = []
+    tasks_path = dataset_dir / "meta/tasks.jsonl"
+    if tasks_path.is_file():
+        try:
+            for line in tasks_path.open():
+                row = json.loads(line)
+                if isinstance(row.get("task"), str):
+                    texts.append(row["task"])
+        except (OSError, json.JSONDecodeError):
+            pass
+    episodes_path = dataset_dir / "meta/episodes.jsonl"
+    if episodes_path.is_file():
+        try:
+            for line in episodes_path.open():
+                row = json.loads(line)
+                if episode_index is not None and row.get("episode_index") != episode_index:
+                    continue
+                tasks = row.get("tasks", [])
+                if isinstance(tasks, list):
+                    texts.extend(value for value in tasks if isinstance(value, str))
+                if episode_index is not None:
+                    break
+        except (OSError, json.JSONDecodeError):
+            pass
+    return texts
+
+
+def semantic_noun_prompts(video_path: Path, video_root: Path) -> list[str]:
+    """Return ``object`` plus dataset and episode-aligned meta noun prompts."""
+    dataset_name = dataset_name_from_video(video_path, video_root)
+    dataset_dir = video_root / dataset_name
+    nouns: list[str] = []
+
+    def add(value: str) -> None:
+        if value and value != "object" and value not in nouns:
+            nouns.append(value)
+
+    for value in semantic_prompts_from_dataset(dataset_name, max_prompts=10_000):
+        add(value)
+    episode_index = _episode_index_from_video(video_path)
+    for text in _task_texts_for_episode(dataset_dir, episode_index):
+        for value in semantic_nouns_from_text(text):
+            add(value)
+    nouns = _deduplicate_compound_nouns(nouns)
+    return ["object", *nouns]
+
+
+def combined_semantic_prompt(video_path: Path, video_root: Path) -> str:
+    """Return the former comma-joined prompt for A/B comparison only."""
+    return ", ".join(all_annotation_noun_prompts(video_path, video_root))

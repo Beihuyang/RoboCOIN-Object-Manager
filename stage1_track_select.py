@@ -42,8 +42,7 @@ from project_paths import portable_path, resolve_project_path, same_project_path
 from semantic_prompts import (
     DEFAULT_MAX_SEMANTIC_PROMPTS,
     PROMPT_STRATEGY,
-    dataset_name_from_video,
-    discovery_prompts,
+    semantic_noun_prompts,
 )
 
 
@@ -58,7 +57,7 @@ CAMERA_KEYWORDS = (
     "high", "head", "front", "chest", "center", "ego", "left", "right"
 )
 FIRST_FRAME_EXTRACTION_METHOD = "source_frame_selected_sr_2k_v1"
-DISCOVERY_CACHE_VERSION = 14
+DISCOVERY_CACHE_VERSION = 17
 TRACK_FRAME_EXTRACTION_METHOD = "source_discovery_frames_interval_v3"
 PROGRESS_PREFIX = "@@PROGRESS "
 ROBOT_ARM_PROMPTS = ("robot arm", "robot gripper", "robot hand")
@@ -696,8 +695,8 @@ def semantic_discovery_prompts(
     base_prompt: str = "object",
     max_semantic_prompts: int = DEFAULT_MAX_SEMANTIC_PROMPTS,
 ) -> list[str]:
-    dataset_name = dataset_name_from_video(video_path, VIDEO_ROOT)
-    return discovery_prompts(dataset_name, base_prompt, max_semantic_prompts)
+    del base_prompt, max_semantic_prompts
+    return semantic_noun_prompts(video_path, VIDEO_ROOT)
 
 
 def detect_first_frame(
@@ -716,31 +715,34 @@ def detect_first_frame(
         image = source.convert("RGB")
     height, width = image.height, image.width
     prompts = [prompt] if isinstance(prompt, str) else list(prompt)
-    prompts = [value.strip() for value in prompts if value and value.strip()]
+    prompts = list(dict.fromkeys(
+        value.strip() for value in prompts if value and value.strip()
+    ))
     if not prompts:
-        prompts = ["object"]
+        raise ValueError("SAM3 discovery requires at least one noun")
     with torch.inference_mode(), torch.autocast(
         "cuda", dtype=torch.bfloat16, cache_enabled=False
     ):
         state = _set_sam3_image(processor, image)
+    processor.set_confidence_threshold(max(0.0, threshold - 1e-7))
     detections_by_prompt = []
-    for text_prompt in prompts:
-        processor.set_confidence_threshold(max(0.0, threshold - 1e-7))
+    raw_counts = {}
+    for noun_prompt in prompts:
         processor.reset_all_prompts(state)
         with torch.inference_mode(), torch.autocast(
             "cuda", dtype=torch.bfloat16, cache_enabled=False
         ):
-            output = processor.set_text_prompt(
-                state=state, prompt=text_prompt
-            )
-        detections_by_prompt.append((text_prompt, _decode_grounding_detections(
-            output, height, width, text_prompt, threshold
-        )))
-    detections, duplicate_detections = merge_cross_prompt_detections(
+            output = processor.set_text_prompt(state=state, prompt=noun_prompt)
+        prompt_detections = _decode_grounding_detections(
+            output, height, width, noun_prompt, threshold
+        )
+        raw_counts[noun_prompt] = len(prompt_detections)
+        detections_by_prompt.append((noun_prompt, prompt_detections))
+    detections, duplicate_matches = merge_cross_prompt_detections(
         detections_by_prompt
     )
     report = {
-        "enabled": exclude_robot_arms,
+        "enabled": False,
         "prompts": list(ROBOT_ARM_PROMPTS),
         "threshold": robot_arm_threshold,
         "overlap_threshold": robot_arm_overlap,
@@ -751,23 +753,15 @@ def detect_first_frame(
         "semantic_discovery": {
             "strategy": PROMPT_STRATEGY,
             "prompts": prompts,
-            "raw_counts": {
-                text_prompt: len(items)
-                for text_prompt, items in detections_by_prompt
-            },
-            "cross_prompt_duplicates_removed": len(duplicate_detections),
-            "duplicate_matches": duplicate_detections,
+            "source_nouns": prompts,
+            "sam3_detection_calls": len(prompts),
+            "raw_counts": raw_counts,
+            "cross_prompt_duplicates_removed": len(duplicate_matches),
+            "duplicate_matches": duplicate_matches,
         },
+        "skip_reason": "noun-only discovery does not run robot prompts",
     }
     kept = detections
-    if exclude_robot_arms and kept:
-        robot_regions = _detect_robot_regions_from_state(
-            state, processor, height, width, robot_arm_threshold
-        )
-        report["regions_detected"] = len(robot_regions)
-        kept, report["removed"] = _filter_robot_arm_overlaps(
-            kept, robot_regions, robot_arm_overlap
-        )
     report["objects_removed"] = len(report["removed"])
     kept, boundary_removed = _filter_image_boundary_masks(kept)
     report["boundary_filter"] = {
@@ -1187,7 +1181,6 @@ def load_cached_initial_masks(
     try:
         manifest = json.loads(manifest_path.read_text())
         extraction = json.loads((frame_path.parent / "extraction.json").read_text())
-        robot_filter = manifest.get("robot_arm_filter", {})
         manual_revision = int(manifest.get("revision", 0)) > 0
         if (
             not same_project_path(manifest.get("frame", ""), frame_path)
@@ -1203,22 +1196,10 @@ def load_cached_initial_masks(
                     or (
                         validate_discovery_settings
                         and (
-                            manifest.get("prompt") != prompt
+                            manifest.get("prompt") != expected_prompts[0]
                             or manifest.get("prompts") != expected_prompts
                             or manifest.get("prompt_strategy") != PROMPT_STRATEGY
                             or float(manifest.get("threshold")) != threshold
-                            or bool(robot_filter.get("enabled", False))
-                            != exclude_robot_arms
-                            or (
-                                exclude_robot_arms
-                                and (
-                                    float(robot_filter.get("threshold", -1))
-                                    != robot_arm_threshold
-                                    or float(robot_filter.get(
-                                        "overlap_threshold", -1
-                                    )) != robot_arm_overlap
-                                )
-                            )
                         )
                     )
                 )
@@ -1267,6 +1248,7 @@ def _base_discovery_cache_matches(
     try:
         manifest = json.loads(manifest_path.read_text())
         extraction = json.loads((frame_path.parent / "extraction.json").read_text())
+        expected_prompts = semantic_discovery_prompts(video_path, prompt)
         return (
             same_project_path(manifest.get("frame", ""), frame_path)
             and manifest.get("frame_extraction_method")
@@ -1274,9 +1256,9 @@ def _base_discovery_cache_matches(
             and manifest.get("discovery_cache_version") == DISCOVERY_CACHE_VERSION
             and int(manifest.get("discovery_frame", {}).get("source_frame_index", -1))
             == int(extraction.get("source_frame_index", -2))
-            and manifest.get("prompt") == prompt
+            and manifest.get("prompt") == expected_prompts[0]
             and manifest.get("prompts")
-            == semantic_discovery_prompts(video_path, prompt)
+            == expected_prompts
             and manifest.get("prompt_strategy") == PROMPT_STRATEGY
             and float(manifest.get("threshold")) == threshold
         )
