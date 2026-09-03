@@ -1,0 +1,23 @@
+# Project-level dependencies. PyTorch/TorchVision are intentionally omitted:
+# this machine reuses its existing CUDA 12.8 builds from system site-packages.
+numpy==1.26.4
+opencv-python==4.10.0.84
+ftfy==6.1.1
+einops
+psutil
+pycocotools
+modelscope
+qwen-vl-utils==0.0.14
+transformers>=4.57,<5
+accelerate>=1,<2
+scikit-learn>=1.5,<1.8
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+jinja2>=3.1
+diffusers==0.38.0
+nltk>=3.9,<4
+basicsr==1.4.2
+realesrgan==0.3.0
+
+# Install OpenAI CLIP separately because it is sourced from GitHub:
+# python -m pip install git+https://github.com/openai/CLIP.git

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430">
+  <style>
+    .bg{fill:#f5f7fb}.node{fill:#fff;stroke:#8fa3bd;stroke-width:2}.cluster{fill:#eaf3ff;stroke:#4f8dcc;stroke-width:2}.trash{fill:#fff0f1;stroke:#d65c67;stroke-width:2}.title{font:700 22px sans-serif;fill:#172033}.text{font:17px sans-serif;fill:#526077}.object{fill:#46ad7c}.arrow{stroke:#287bd1;stroke-width:4;fill:none;marker-end:url(#a)}
+  </style>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#287bd1"/></marker></defs>
+  <rect class="bg" width="1200" height="430" rx="20"/>
+  <text class="title" x="55" y="55">把物体卡拖到目标位置</text>
+  <g transform="translate(60 90)"><rect class="node" width="210" height="230" rx="16"/><text class="title" x="54" y="42">待调整物体</text><rect x="45" y="70" width="120" height="105" rx="12" fill="#d5e1ea"/><circle class="object" cx="105" cy="122" r="38"/><text class="text" x="50" y="205">拖动整张物体卡</text></g>
+  <path class="arrow" d="M290 150 C355 100 405 100 460 135"/><path class="arrow" d="M290 205 C355 205 405 205 460 205"/><path class="arrow" d="M290 260 C355 315 405 315 460 275"/>
+  <g transform="translate(475 72)"><rect class="cluster" width="300" height="90" rx="14"/><text class="title" x="24" y="37">已有簇</text><text class="text" x="24" y="67">确认是同一个真实物体</text><rect class="node" y="112" width="300" height="90" rx="14"/><text class="title" x="24" y="149">类别节点</text><text class="text" x="24" y="179">类别相同，但新建独立簇</text><rect class="trash" y="224" width="300" height="90" rx="14"/><text class="title" x="24" y="261">垃圾桶</text><text class="text" x="24" y="291">机械臂、背景、无意义图片</text></g>
+  <g transform="translate(830 88)"><text class="title" x="0" y="25">判断口诀</text><text class="text" x="0" y="72">同一实物 → 合并到已有簇</text><text class="text" x="0" y="112">同类不同实物 → 分成不同簇</text><text class="text" x="0" y="152">类别错误 → 拖到正确类别</text><text class="text" x="0" y="192">无效物体 → 拖到垃圾桶</text><rect x="0" y="225" width="300" height="80" rx="12" fill="#fff4cf"/><text class="text" x="18" y="257">有 WordNet 警告时，</text><text class="text" x="18" y="285">选择正确且尽量具体的类别。</text></g>
+</svg>

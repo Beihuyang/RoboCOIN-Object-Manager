@@ -14,7 +14,16 @@ from torchvision.transforms import v2
 class Sam3Processor:
     """ """
 
-    def __init__(self, model, resolution=1008, device="cuda", confidence_threshold=0.5):
+    def __init__(
+        self,
+        model,
+        resolution=1008,
+        device="cuda",
+        confidence_threshold=0.5,
+        mask_upsample_chunk_size=None,
+        offload_masks_to_cpu=False,
+        retain_mask_logits=True,
+    ):
         self.model = model
         self.resolution = resolution
         self.device = device
@@ -27,6 +36,9 @@ class Sam3Processor:
             ]
         )
         self.confidence_threshold = confidence_threshold
+        self.mask_upsample_chunk_size = mask_upsample_chunk_size
+        self.offload_masks_to_cpu = offload_masks_to_cpu
+        self.retain_mask_logits = retain_mask_logits
 
         self.find_stage = FindStage(
             img_ids=torch.tensor([0], device=device, dtype=torch.long),
@@ -39,8 +51,8 @@ class Sam3Processor:
         )
 
     @torch.inference_mode()
-    def set_image(self, image, state=None):
-        """Sets the image on which we want to do predictions."""
+    def set_image(self, image, state=None, original_size=None):
+        """Set an inference image, optionally mapping masks to another output size."""
         if state is None:
             state = {}
 
@@ -50,6 +62,11 @@ class Sam3Processor:
             height, width = image.shape[-2:]
         else:
             raise ValueError("Image must be a PIL image or a tensor")
+
+        if original_size is not None:
+            width, height = map(int, original_size)
+            if width <= 0 or height <= 0:
+                raise ValueError("original_size must contain a positive width and height")
 
         image = v2.functional.to_image(image).to(self.device)
         image = self.transform(image).unsqueeze(0)
@@ -208,17 +225,53 @@ class Sam3Processor:
         scale_fct = torch.tensor([img_w, img_h, img_w, img_h]).to(self.device)
         boxes = boxes * scale_fct[None, :]
 
-        out_masks = interpolate(
-            out_masks.unsqueeze(1),
-            # pyre-fixme[6]: For 2nd argument expected `Optional[List[int]]` but got
-            #  `Tuple[Any, Any]`.
-            (img_h, img_w),
-            mode="bilinear",
-            align_corners=False,
-        ).sigmoid()
-
-        state["masks_logits"] = out_masks
-        state["masks"] = out_masks > 0.5
+        chunk_size = self.mask_upsample_chunk_size
+        if chunk_size is None or chunk_size <= 0:
+            out_masks = interpolate(
+                out_masks.unsqueeze(1),
+                # pyre-fixme[6]: For 2nd argument expected `Optional[List[int]]` but got
+                #  `Tuple[Any, Any]`.
+                (img_h, img_w),
+                mode="bilinear",
+                align_corners=False,
+            ).sigmoid()
+            state["masks_logits"] = out_masks
+            state["masks"] = out_masks > 0.5
+        else:
+            binary_chunks = []
+            logit_chunks = []
+            for mask_chunk in out_masks.split(int(chunk_size), dim=0):
+                resized_chunk = interpolate(
+                    mask_chunk.unsqueeze(1),
+                    (img_h, img_w),
+                    mode="bilinear",
+                    align_corners=False,
+                ).sigmoid()
+                binary_chunk = resized_chunk > 0.5
+                if self.offload_masks_to_cpu:
+                    binary_chunk = binary_chunk.cpu()
+                binary_chunks.append(binary_chunk)
+                if self.retain_mask_logits:
+                    logit_chunks.append(resized_chunk)
+            mask_device = "cpu" if self.offload_masks_to_cpu else out_masks.device
+            state["masks"] = (
+                torch.cat(binary_chunks, dim=0)
+                if binary_chunks
+                else torch.empty(
+                    (0, 1, img_h, img_w), dtype=torch.bool, device=mask_device
+                )
+            )
+            if self.retain_mask_logits:
+                state["masks_logits"] = (
+                    torch.cat(logit_chunks, dim=0)
+                    if logit_chunks
+                    else torch.empty(
+                        (0, 1, img_h, img_w), dtype=torch.float32,
+                        device=out_masks.device,
+                    )
+                )
+            else:
+                state.pop("masks_logits", None)
         state["boxes"] = boxes
         state["scores"] = out_probs
         return state

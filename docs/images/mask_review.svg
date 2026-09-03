@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520">
+  <style>
+    .bg{fill:#f5f7fb}.panel{fill:#fff;stroke:#9aabc2;stroke-width:2}.bar{fill:#e8edf5}.label{font:700 22px sans-serif;fill:#172033}.text{font:18px sans-serif;fill:#526077}.button{fill:#287bd1}.buttonText{font:700 17px sans-serif;fill:#fff}.mask{fill:#37b978;fill-opacity:.35;stroke:#159458;stroke-width:5}.box{fill:none;stroke:#ffb020;stroke-width:5;stroke-dasharray:12 8}.positive{fill:#23b26d;stroke:#fff;stroke-width:4}.negative{stroke:#e34d59;stroke-width:7}.arrow{stroke:#287bd1;stroke-width:4;fill:none;marker-end:url(#a)}
+  </style>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#287bd1"/></marker></defs>
+  <rect class="bg" width="1200" height="520" rx="20"/>
+  <rect class="panel" x="45" y="45" width="720" height="430" rx="16"/><rect class="bar" x="45" y="45" width="720" height="60" rx="16"/><text class="label" x="75" y="83">关键帧审核画布</text>
+  <rect x="85" y="135" width="640" height="290" rx="12" fill="#cbd6df"/><rect x="85" y="330" width="640" height="95" fill="#9f826b"/>
+  <ellipse cx="395" cy="320" rx="105" ry="72" fill="#d9aa58"/><path class="mask" d="M293 311 C305 250 355 232 420 248 C490 260 514 315 479 362 C436 407 333 389 301 343 Z"/>
+  <rect class="box" x="270" y="225" width="245" height="180" rx="8"/><circle class="positive" cx="390" cy="310" r="13"/><path class="negative" d="M520 262 l22 22 m0-22 l-22 22"/>
+  <text class="text" x="105" y="458">黄色虚线：人工框　● 绿色：目标正点　× 红色：排除点</text>
+  <path class="arrow" d="M785 155 H845"/><text class="label" x="855" y="145">漏检时这样做</text>
+  <g transform="translate(845 175)"><rect class="button" width="285" height="48" rx="9"/><text class="buttonText" x="95" y="31">1　框选新增</text><rect class="button" y="66" width="285" height="48" rx="9"/><text class="buttonText" x="52" y="97">2　添加正点 / 负点</text><rect class="button" y="132" width="285" height="48" rx="9"/><text class="buttonText" x="45" y="163">3　SAM3 细化人工框</text><rect class="button" y="198" width="285" height="48" rx="9"/><text class="buttonText" x="72" y="229">4　检查并保存</text></g>
+  <text class="text" x="845" y="454">一个框只标一个物体。</text><text class="text" x="845" y="482">结果不对就调整框或点，再细化。</text>
+</svg>

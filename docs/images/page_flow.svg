@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="280" viewBox="0 0 1200 280">
+  <style>
+    .bg{fill:#f5f7fb}.card{fill:#fff;stroke:#9aabc2;stroke-width:2}.title{font:700 26px sans-serif;fill:#172033}.text{font:18px sans-serif;fill:#526077}.num{font:700 24px sans-serif;fill:#fff}.circle{fill:#287bd1}.arrow{stroke:#287bd1;stroke-width:5;fill:none;marker-end:url(#a)}
+  </style>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#287bd1"/></marker></defs>
+  <rect class="bg" width="1200" height="280" rx="20"/>
+  <g transform="translate(55 55)"><rect class="card" width="290" height="170" rx="18"/><circle class="circle" cx="38" cy="38" r="23"/><text class="num" x="31" y="47">1</text><text class="title" x="75" y="47">掩码审核</text><text class="text" x="28" y="95">删除错误掩码</text><text class="text" x="28" y="127">补充漏检物体并跟踪</text><text class="text" x="28" y="157">/review</text></g>
+  <path class="arrow" d="M370 140 H445"/>
+  <g transform="translate(455 55)"><rect class="card" width="290" height="170" rx="18"/><circle class="circle" cx="38" cy="38" r="23"/><text class="num" x="31" y="47">2</text><text class="title" x="75" y="47">调整树</text><text class="text" x="28" y="95">修正类别与物体簇</text><text class="text" x="28" y="127">清理垃圾物体</text><text class="text" x="28" y="157">/dedup</text></g>
+  <path class="arrow" d="M770 140 H845"/>
+  <g transform="translate(855 55)"><rect class="card" width="290" height="170" rx="18"/><circle class="circle" cx="38" cy="38" r="23"/><text class="num" x="31" y="47">3</text><text class="title" x="75" y="47">最终检查</text><text class="text" x="28" y="95">抽查图片与来源</text><text class="text" x="28" y="127">发现问题返回调整树</text><text class="text" x="28" y="157">/new-library</text></g>
+</svg>

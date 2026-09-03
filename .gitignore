@@ -1,12 +1,18 @@
 # Downloaded datasets (large)
 RoboCOIN_datasets/
+RoboCOIN_object_linked/
 
 # Output directories
 objects/crops/
+objects/tracks/
 objects/manifests/
 objects/embeddings/
 objects/library/
 objects/attributes.jsonl
+objects/new_library/
+objects/new_library_archive/
+objects/new_library_work/
+objects/object_text_links/
 
 # Checkpoints & model weights
 *.pth
@@ -14,6 +20,7 @@ objects/attributes.jsonl
 *.safetensors
 checkpoints/
 sam3_weights/
+models/
 
 # Python
 __pycache__/
@@ -35,3 +42,7 @@ Thumbs.db
 # Temp
 *.log
 /tmp/
+
+# Generated evaluation reports (keep report scripts and README tracked)
+reports/20*/
+reports/_*/

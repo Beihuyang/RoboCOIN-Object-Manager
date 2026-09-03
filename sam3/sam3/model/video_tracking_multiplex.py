@@ -1086,13 +1086,18 @@ class VideoTrackingMultiplex(nn.Module):
                     backbone_out["sam2_backbone_out"]["backbone_fpn"][1].tensors
                 )
         # Clone to help torch.compile
-        for out_type in backbone_out.keys():
-            for i in range(len(backbone_out[out_type]["backbone_fpn"])):
-                backbone_out[out_type]["backbone_fpn"][i].tensors = self._maybe_clone(
-                    backbone_out[out_type]["backbone_fpn"][i].tensors
+        for out_type, output in backbone_out.items():
+            # The SAM 3 branch also exposes top-level tensor/list fields such as
+            # ``vision_features`` and ``backbone_fpn``. Only the interactive and
+            # propagation heads are nested dictionaries with their own FPN.
+            if not isinstance(output, dict) or "backbone_fpn" not in output:
+                continue
+            for i in range(len(output["backbone_fpn"])):
+                output["backbone_fpn"][i].tensors = self._maybe_clone(
+                    output["backbone_fpn"][i].tensors
                 )
-                backbone_out[out_type]["vision_pos_enc"][i] = self._maybe_clone(
-                    backbone_out[out_type]["vision_pos_enc"][i]
+                output["vision_pos_enc"][i] = self._maybe_clone(
+                    output["vision_pos_enc"][i]
                 )
         return backbone_out
 

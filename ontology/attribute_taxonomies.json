@@ -1,0 +1,216 @@
+{
+  "version": "robocoin-controlled-v1",
+  "attributes": {
+    "color": {
+      "id": "color",
+      "label": "unknown",
+      "definition": "the dominant visible color family and, when supportable, its shade",
+      "children": [
+        {"id": "color.unknown", "label": "unknown", "definition": "color cannot be judged reliably"},
+        {"id": "color.black", "label": "black", "definition": "black or nearly black", "children": [
+          {"id": "color.black.jet", "label": "jet black", "definition": "deep saturated black"},
+          {"id": "color.black.charcoal", "label": "charcoal black", "definition": "slightly grayish black"}
+        ]},
+        {"id": "color.white", "label": "white", "definition": "white or nearly white", "children": [
+          {"id": "color.white.bright", "label": "bright white", "definition": "clean high-brightness white"},
+          {"id": "color.white.off", "label": "off-white", "definition": "slightly tinted white"},
+          {"id": "color.white.cream", "label": "cream", "definition": "warm yellowish white"}
+        ]},
+        {"id": "color.gray", "label": "gray", "definition": "neutral gray", "children": [
+          {"id": "color.gray.light", "label": "light gray", "definition": "high-brightness gray"},
+          {"id": "color.gray.dark", "label": "dark gray", "definition": "low-brightness gray"},
+          {"id": "color.gray.silver", "label": "silver", "definition": "silvery metallic gray"}
+        ]},
+        {"id": "color.red", "label": "red", "definition": "red color family", "children": [
+          {"id": "color.red.light", "label": "light red", "definition": "pale or light red"},
+          {"id": "color.red.dark", "label": "dark red", "definition": "deep low-brightness red"},
+          {"id": "color.red.bright", "label": "bright red", "definition": "vivid saturated red"},
+          {"id": "color.red.burgundy", "label": "burgundy", "definition": "dark purplish red"}
+        ]},
+        {"id": "color.orange", "label": "orange", "definition": "orange color family", "children": [
+          {"id": "color.orange.light", "label": "light orange", "definition": "pale orange"},
+          {"id": "color.orange.dark", "label": "dark orange", "definition": "deep orange"},
+          {"id": "color.orange.bright", "label": "bright orange", "definition": "vivid saturated orange"}
+        ]},
+        {"id": "color.yellow", "label": "yellow", "definition": "yellow color family", "children": [
+          {"id": "color.yellow.light", "label": "light yellow", "definition": "pale yellow"},
+          {"id": "color.yellow.dark", "label": "dark yellow", "definition": "deep muted yellow"},
+          {"id": "color.yellow.bright", "label": "bright yellow", "definition": "vivid saturated yellow"},
+          {"id": "color.yellow.gold", "label": "gold", "definition": "golden yellow, often metallic"}
+        ]},
+        {"id": "color.green", "label": "green", "definition": "green color family", "children": [
+          {"id": "color.green.light", "label": "light green", "definition": "pale or high-brightness green"},
+          {"id": "color.green.dark", "label": "dark green", "definition": "deep low-brightness green"},
+          {"id": "color.green.bright", "label": "bright green", "definition": "vivid saturated green"},
+          {"id": "color.green.olive", "label": "olive green", "definition": "muted yellowish green"},
+          {"id": "color.green.mint", "label": "mint green", "definition": "pale bluish green"},
+          {"id": "color.green.teal", "label": "teal", "definition": "dark blue-green"}
+        ]},
+        {"id": "color.blue", "label": "blue", "definition": "blue color family", "children": [
+          {"id": "color.blue.light", "label": "light blue", "definition": "pale or high-brightness blue"},
+          {"id": "color.blue.dark", "label": "dark blue", "definition": "deep low-brightness blue"},
+          {"id": "color.blue.bright", "label": "bright blue", "definition": "vivid saturated blue"},
+          {"id": "color.blue.navy", "label": "navy blue", "definition": "very dark blue"},
+          {"id": "color.blue.cyan", "label": "cyan", "definition": "bright greenish blue"}
+        ]},
+        {"id": "color.purple", "label": "purple", "definition": "purple or violet color family", "children": [
+          {"id": "color.purple.light", "label": "light purple", "definition": "pale purple"},
+          {"id": "color.purple.dark", "label": "dark purple", "definition": "deep purple"},
+          {"id": "color.purple.bright", "label": "bright purple", "definition": "vivid saturated purple"}
+        ]},
+        {"id": "color.pink", "label": "pink", "definition": "pink color family", "children": [
+          {"id": "color.pink.light", "label": "light pink", "definition": "pale pink"},
+          {"id": "color.pink.dark", "label": "dark pink", "definition": "deep pink"},
+          {"id": "color.pink.bright", "label": "bright pink", "definition": "vivid saturated pink"}
+        ]},
+        {"id": "color.brown", "label": "brown", "definition": "brown color family", "children": [
+          {"id": "color.brown.light", "label": "light brown", "definition": "pale brown or tan"},
+          {"id": "color.brown.dark", "label": "dark brown", "definition": "deep brown"},
+          {"id": "color.brown.reddish", "label": "reddish brown", "definition": "brown with a visible red cast"}
+        ]},
+        {"id": "color.beige", "label": "beige", "definition": "pale sandy beige or tan"},
+        {"id": "color.transparent", "label": "transparent or translucent", "definition": "largely colorless and visibly transmits light"},
+        {"id": "color.multicolored", "label": "multicolored", "definition": "multiple similarly important colors", "children": [
+          {"id": "color.multicolored.two_tone", "label": "two-tone", "definition": "two dominant colors"},
+          {"id": "color.multicolored.varied", "label": "varied multicolor", "definition": "three or more important colors"}
+        ]}
+      ]
+    },
+    "material": {
+      "id": "material",
+      "label": "unknown",
+      "definition": "the visually supportable primary material",
+      "children": [
+        {"id": "material.unknown", "label": "unknown", "definition": "material cannot be judged reliably"},
+        {"id": "material.metal", "label": "metal", "definition": "metallic structural material", "children": [
+          {"id": "material.metal.steel", "label": "steel", "definition": "steel or stainless steel"},
+          {"id": "material.metal.aluminum", "label": "aluminum", "definition": "light silvery aluminum"},
+          {"id": "material.metal.iron", "label": "iron", "definition": "iron or cast iron"},
+          {"id": "material.metal.copper", "label": "copper", "definition": "reddish copper"},
+          {"id": "material.metal.brass", "label": "brass", "definition": "yellow-gold brass"}
+        ]},
+        {"id": "material.plastic", "label": "plastic", "definition": "synthetic polymer material", "children": [
+          {"id": "material.plastic.rigid", "label": "rigid plastic", "definition": "hard shape-retaining plastic"},
+          {"id": "material.plastic.flexible", "label": "flexible plastic", "definition": "soft or bendable plastic"},
+          {"id": "material.plastic.clear", "label": "clear plastic", "definition": "transparent or translucent plastic"},
+          {"id": "material.plastic.foam", "label": "plastic foam", "definition": "light cellular polymer foam"}
+        ]},
+        {"id": "material.wood", "label": "wood", "definition": "wooden material", "children": [
+          {"id": "material.wood.solid", "label": "solid wood", "definition": "natural solid wood"},
+          {"id": "material.wood.engineered", "label": "engineered wood", "definition": "plywood, fiberboard, or laminated wood"}
+        ]},
+        {"id": "material.textile", "label": "textile", "definition": "woven, knitted, or felted fabric", "children": [
+          {"id": "material.textile.cotton", "label": "cotton", "definition": "cotton-like fabric"},
+          {"id": "material.textile.wool", "label": "wool", "definition": "woolen fabric"},
+          {"id": "material.textile.synthetic", "label": "synthetic textile", "definition": "polyester, nylon, or similar synthetic fabric"},
+          {"id": "material.textile.denim", "label": "denim", "definition": "dense twill denim"},
+          {"id": "material.textile.felt", "label": "felt", "definition": "nonwoven felt material"}
+        ]},
+        {"id": "material.paper", "label": "paper", "definition": "paper-based material", "children": [
+          {"id": "material.paper.paper", "label": "paper", "definition": "thin paper"},
+          {"id": "material.paper.cardboard", "label": "cardboard", "definition": "thick paperboard or corrugated board"}
+        ]},
+        {"id": "material.glass", "label": "glass", "definition": "rigid glass material"},
+        {"id": "material.ceramic", "label": "ceramic", "definition": "ceramic, porcelain, or earthenware"},
+        {"id": "material.rubber", "label": "rubber", "definition": "elastic rubber-like material"},
+        {"id": "material.leather", "label": "leather", "definition": "natural or synthetic leather"},
+        {"id": "material.stone", "label": "stone", "definition": "stone, concrete, or mineral material"},
+        {"id": "material.organic", "label": "organic material", "definition": "food, plant, or other biological material", "children": [
+          {"id": "material.organic.food", "label": "food material", "definition": "edible organic material"},
+          {"id": "material.organic.plant", "label": "plant material", "definition": "leaf, stem, fiber, or other plant matter"}
+        ]},
+        {"id": "material.composite", "label": "mixed or composite material", "definition": "multiple materials with no reliable single primary material"}
+      ]
+    },
+    "shape": {
+      "id": "shape",
+      "label": "unknown",
+      "definition": "the dominant visible geometric or structural form",
+      "children": [
+        {"id": "shape.unknown", "label": "unknown", "definition": "shape cannot be judged reliably"},
+        {"id": "shape.volumetric", "label": "solid volumetric", "definition": "a compact three-dimensional solid form", "children": [
+          {"id": "shape.volumetric.spherical", "label": "spherical", "definition": "ball-like or nearly spherical"},
+          {"id": "shape.volumetric.cylindrical", "label": "cylindrical", "definition": "cylinder-like with roughly circular cross-section"},
+          {"id": "shape.volumetric.cuboid", "label": "cuboid", "definition": "rectangular box-like solid"},
+          {"id": "shape.volumetric.conical", "label": "conical", "definition": "cone-like or tapering to a point"},
+          {"id": "shape.volumetric.pyramidal", "label": "pyramidal", "definition": "pyramid-like solid"},
+          {"id": "shape.volumetric.irregular", "label": "irregular solid", "definition": "compact solid without a simple geometric form"}
+        ]},
+        {"id": "shape.planar", "label": "flat or planar", "definition": "predominantly flat with small thickness", "children": [
+          {"id": "shape.planar.circular", "label": "circular flat", "definition": "flat and circular"},
+          {"id": "shape.planar.oval", "label": "oval flat", "definition": "flat and oval"},
+          {"id": "shape.planar.rectangular", "label": "rectangular flat", "definition": "flat and rectangular"},
+          {"id": "shape.planar.triangular", "label": "triangular flat", "definition": "flat and triangular"},
+          {"id": "shape.planar.irregular", "label": "irregular flat", "definition": "flat with an irregular outline"}
+        ]},
+        {"id": "shape.elongated", "label": "elongated", "definition": "much longer than wide", "children": [
+          {"id": "shape.elongated.rod", "label": "rod-like", "definition": "straight rigid elongated form"},
+          {"id": "shape.elongated.tube", "label": "tube-like", "definition": "elongated hollow or tubular form"},
+          {"id": "shape.elongated.strip", "label": "strip-like", "definition": "long, flat, narrow form"},
+          {"id": "shape.elongated.rope", "label": "rope-like", "definition": "long flexible cord-like form"}
+        ]},
+        {"id": "shape.container", "label": "hollow container form", "definition": "a form visibly intended to hold contents", "children": [
+          {"id": "shape.container.bowl", "label": "bowl-like", "definition": "open rounded container form"},
+          {"id": "shape.container.cup", "label": "cup-like", "definition": "small upright open vessel form"},
+          {"id": "shape.container.box", "label": "box-like", "definition": "rectangular container form"},
+          {"id": "shape.container.bottle", "label": "bottle-like", "definition": "container with a narrow neck or opening"},
+          {"id": "shape.container.tray", "label": "tray-like", "definition": "shallow open container form"},
+          {"id": "shape.container.bag", "label": "bag-like", "definition": "flexible pouch or sack form"}
+        ]},
+        {"id": "shape.articulated", "label": "articulated or multipart", "definition": "multiple visibly connected structural parts", "children": [
+          {"id": "shape.articulated.jointed", "label": "jointed", "definition": "parts connected by visible joints"},
+          {"id": "shape.articulated.hinged", "label": "hinged", "definition": "parts connected by one or more hinges"},
+          {"id": "shape.articulated.branched", "label": "branched", "definition": "one body dividing into multiple branches"},
+          {"id": "shape.articulated.complex", "label": "complex multipart", "definition": "complex assembly of several forms"}
+        ]},
+        {"id": "shape.deformable", "label": "soft or deformable", "definition": "shape is dominated by folding or deformation", "children": [
+          {"id": "shape.deformable.folded", "label": "folded", "definition": "visibly folded into layers"},
+          {"id": "shape.deformable.crumpled", "label": "crumpled", "definition": "irregularly compressed or wrinkled"},
+          {"id": "shape.deformable.draped", "label": "draped", "definition": "hanging or conforming to a supporting surface"},
+          {"id": "shape.deformable.amorphous", "label": "amorphous", "definition": "no stable geometric shape"}
+        ]}
+      ]
+    },
+    "texture": {
+      "id": "texture",
+      "label": "unknown",
+      "definition": "the dominant visible surface appearance",
+      "children": [
+        {"id": "texture.unknown", "label": "unknown", "definition": "surface appearance cannot be judged reliably"},
+        {"id": "texture.smooth", "label": "smooth", "definition": "even surface with little visible relief", "children": [
+          {"id": "texture.smooth.glossy", "label": "smooth glossy", "definition": "smooth with strong highlights or reflections"},
+          {"id": "texture.smooth.matte", "label": "smooth matte", "definition": "smooth with diffuse low-gloss appearance"},
+          {"id": "texture.smooth.satin", "label": "smooth satin", "definition": "smooth with soft moderate sheen"}
+        ]},
+        {"id": "texture.rough", "label": "rough", "definition": "visibly uneven or abrasive surface", "children": [
+          {"id": "texture.rough.coarse", "label": "coarse", "definition": "large-scale roughness"},
+          {"id": "texture.rough.grainy", "label": "grainy", "definition": "fine visible grains"},
+          {"id": "texture.rough.gritty", "label": "gritty", "definition": "sand-like rough appearance"}
+        ]},
+        {"id": "texture.fabric", "label": "fabric-like", "definition": "surface visibly formed from fibers", "children": [
+          {"id": "texture.fabric.woven", "label": "woven", "definition": "visible interlaced weave"},
+          {"id": "texture.fabric.knitted", "label": "knitted", "definition": "visible knitted loops"},
+          {"id": "texture.fabric.felted", "label": "felted", "definition": "dense nonwoven fiber surface"},
+          {"id": "texture.fabric.fuzzy", "label": "fuzzy", "definition": "soft protruding fibers or pile"}
+        ]},
+        {"id": "texture.patterned", "label": "visibly patterned", "definition": "surface dominated by a repeated visual pattern", "children": [
+          {"id": "texture.patterned.striped", "label": "striped", "definition": "repeated lines or bands"},
+          {"id": "texture.patterned.spotted", "label": "spotted", "definition": "repeated spots or dots"},
+          {"id": "texture.patterned.checkered", "label": "checkered", "definition": "repeated grid or checks"},
+          {"id": "texture.patterned.printed", "label": "printed pattern", "definition": "printed graphics or decorative motif"}
+        ]},
+        {"id": "texture.ridged", "label": "ridged or grooved", "definition": "surface has repeated raised or recessed lines", "children": [
+          {"id": "texture.ridged.ribbed", "label": "ribbed", "definition": "parallel raised ribs"},
+          {"id": "texture.ridged.grooved", "label": "grooved", "definition": "parallel recessed grooves"},
+          {"id": "texture.ridged.corrugated", "label": "corrugated", "definition": "alternating repeated ridges and valleys"}
+        ]},
+        {"id": "texture.bumpy", "label": "bumpy", "definition": "surface has distinct bumps or protrusions"},
+        {"id": "texture.wrinkled", "label": "wrinkled", "definition": "surface has irregular creases or folds"},
+        {"id": "texture.porous", "label": "porous or perforated", "definition": "surface has visible pores or holes", "children": [
+          {"id": "texture.porous.spongy", "label": "spongy", "definition": "many small irregular pores"},
+          {"id": "texture.porous.perforated", "label": "perforated", "definition": "regular intentional holes"}
+        ]}
+      ]
+    }
+  }
+}
