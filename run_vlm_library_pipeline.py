@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from hardware_profiles import PROFILES, default_profile_name
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -79,6 +80,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tracker", choices=("sam3",), default="sam3")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--hardware-profile", choices=tuple(PROFILES), default=default_profile_name()
+    )
     args = parser.parse_args()
 
     preserve_existing_tree_fingerprint_baseline()
@@ -88,6 +92,8 @@ def main() -> None:
         str(BASE_DIR / "stage3_attribute.py"),
         "--tracker",
         args.tracker,
+        "--hardware-profile",
+        args.hardware_profile,
     ]
     if args.force:
         annotation.append("--force")
@@ -96,7 +102,8 @@ def main() -> None:
 
     emit_progress(70, "开始计算CLIP特征和去重候选")
     run_stage(
-        [sys.executable, str(BASE_DIR / "stage4_dedup.py")],
+        [sys.executable, str(BASE_DIR / "stage4_dedup.py"),
+         "--hardware-profile", args.hardware_profile],
         70,
         95,
         "CLIP deduplication",

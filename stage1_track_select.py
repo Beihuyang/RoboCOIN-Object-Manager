@@ -38,6 +38,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
+from hardware_profiles import PROFILES, default_profile_name, get_profile
 from project_paths import portable_path, resolve_project_path, same_project_path
 from semantic_prompts import (
     DEFAULT_MAX_SEMANTIC_PROMPTS,
@@ -65,6 +66,7 @@ DEFAULT_ROBOT_ARM_THRESHOLD = 0.10
 DEFAULT_ROBOT_ARM_OVERLAP = 0.50
 DEFAULT_CROSS_PROMPT_IOU = 0.55
 DEFAULT_CROSS_PROMPT_CONTAINMENT = 0.80
+RUNTIME_PROFILE = get_profile("local")
 
 
 def _set_sam3_image(processor, image: Image.Image):
@@ -501,8 +503,8 @@ def load_sam3_detector(
     return model, Sam3Processor(
         model,
         confidence_threshold=0.0,
-        mask_upsample_chunk_size=8,
-        offload_masks_to_cpu=True,
+        mask_upsample_chunk_size=RUNTIME_PROFILE.sam3_mask_upsample_chunk_size,
+        offload_masks_to_cpu=RUNTIME_PROFILE.sam3_offload_masks_to_cpu,
         retain_mask_logits=False,
     )
 
@@ -720,21 +722,42 @@ def detect_first_frame(
     ))
     if not prompts:
         raise ValueError("SAM3 discovery requires at least one noun")
-    with torch.inference_mode(), torch.autocast(
-        "cuda", dtype=torch.bfloat16, cache_enabled=False
-    ):
-        state = _set_sam3_image(processor, image)
-    processor.set_confidence_threshold(max(0.0, threshold - 1e-7))
     detections_by_prompt = []
     raw_counts = {}
-    for noun_prompt in prompts:
-        processor.reset_all_prompts(state)
+    if RUNTIME_PROFILE.sam3_official_prompt_batch and len(prompts) > 1:
+        from sam3_official_batch import infer_text_queries
+        from super_resolution import upscale_for_sam3
+
+        outputs = {}
+        enhanced = upscale_for_sam3(image)
+        batch_size = RUNTIME_PROFILE.sam3_prompt_batch_size
+        for start in range(0, len(prompts), batch_size):
+            chunk = prompts[start:start + batch_size]
+            outputs.update(infer_text_queries(
+                model,
+                enhanced,
+                chunk,
+                original_size=image.size,
+                threshold=threshold,
+            ))
+    else:
         with torch.inference_mode(), torch.autocast(
             "cuda", dtype=torch.bfloat16, cache_enabled=False
         ):
-            output = processor.set_text_prompt(state=state, prompt=noun_prompt)
+            state = _set_sam3_image(processor, image)
+        processor.set_confidence_threshold(max(0.0, threshold - 1e-7))
+        outputs = {}
+        for noun_prompt in prompts:
+            processor.reset_all_prompts(state)
+            with torch.inference_mode(), torch.autocast(
+                "cuda", dtype=torch.bfloat16, cache_enabled=False
+            ):
+                outputs[noun_prompt] = processor.set_text_prompt(
+                    state=state, prompt=noun_prompt
+                )
+    for noun_prompt in prompts:
         prompt_detections = _decode_grounding_detections(
-            output, height, width, noun_prompt, threshold
+            outputs[noun_prompt], height, width, noun_prompt, threshold
         )
         raw_counts[noun_prompt] = len(prompt_detections)
         detections_by_prompt.append((noun_prompt, prompt_detections))
@@ -754,7 +777,11 @@ def detect_first_frame(
             "strategy": PROMPT_STRATEGY,
             "prompts": prompts,
             "source_nouns": prompts,
-            "sam3_detection_calls": len(prompts),
+            "sam3_detection_calls": (
+                math.ceil(len(prompts) / RUNTIME_PROFILE.sam3_prompt_batch_size)
+                if RUNTIME_PROFILE.sam3_official_prompt_batch else len(prompts)
+            ),
+            "official_batched_inference": RUNTIME_PROFILE.sam3_official_prompt_batch,
             "raw_counts": raw_counts,
             "cross_prompt_duplicates_removed": len(duplicate_matches),
             "duplicate_matches": duplicate_matches,
@@ -1662,15 +1689,15 @@ def process_video_sam31_mask(
     images, video_height, video_width = load_video_frames(
         video_path=str(frame_paths[0].parent),
         image_size=tracker.image_size,
-        offload_video_to_cpu=True,
-        async_loading_frames=False,
+        offload_video_to_cpu=RUNTIME_PROFILE.tracker_offload_video_to_cpu,
+        async_loading_frames=RUNTIME_PROFILE.tracker_async_loading_frames,
     )
     inference_state = tracker.init_state(
         video_height=video_height,
         video_width=video_width,
         num_frames=len(images),
-        offload_state_to_cpu=True,
-        offload_video_to_cpu=True,
+        offload_state_to_cpu=RUNTIME_PROFILE.tracker_offload_state_to_cpu,
+        offload_video_to_cpu=RUNTIME_PROFILE.tracker_offload_video_to_cpu,
     )
     inference_state["images"] = images
     try:
@@ -1997,6 +2024,7 @@ def discover_initial_masks(
 
 
 def main():
+    global RUNTIME_PROFILE
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", type=Path, default=None)
     parser.add_argument("--limit", type=int, default=0)
@@ -2022,6 +2050,10 @@ def main():
         help="remove an object when this fraction of its mask overlaps robot-arm masks",
     )
     parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument(
+        "--hardware-profile", choices=tuple(PROFILES), default=default_profile_name(),
+        help="local saves VRAM; a800 keeps inference state on the 80GB GPU",
+    )
     parser.add_argument("--quality-sharpness", type=float, default=0.45)
     parser.add_argument("--quality-area", type=float, default=0.20)
     parser.add_argument("--quality-confidence", type=float, default=0.15)
@@ -2063,6 +2095,8 @@ def main():
         help="SAM 3.1 multiplex checkpoint used for reviewed-mask tracking.",
     )
     args = parser.parse_args()
+    RUNTIME_PROFILE = get_profile(args.hardware_profile)
+    print(f"Hardware profile: {RUNTIME_PROFILE.name}")
     if args.sample_fps <= 0:
         parser.error("--sample-fps must be positive")
     if not 0 <= args.robot_arm_threshold <= 1:

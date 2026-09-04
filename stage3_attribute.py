@@ -17,6 +17,7 @@ import torch
 from PIL import Image, ImageDraw
 from tqdm import tqdm
 
+from hardware_profiles import PROFILES, default_profile_name, get_profile
 from project_paths import portable_path, resolve_project_path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -1075,8 +1076,14 @@ def main():
     parser.add_argument("--tracker", choices=("sam3",), default="sam3")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument(
+        "--hardware-profile", choices=tuple(PROFILES), default=default_profile_name()
+    )
+    parser.add_argument("--batch-size", type=int, default=None)
     args = parser.parse_args()
+    profile = get_profile(args.hardware_profile)
+    if args.batch_size is None:
+        args.batch_size = profile.qwen_batch_size
     if args.batch_size <= 0:
         parser.error("--batch-size must be positive")
 
@@ -1107,6 +1114,7 @@ def main():
         f"pending: {len(pending)}",
         flush=True,
     )
+    print(f"Hardware profile: {profile.name}; Qwen batch size: {args.batch_size}")
     emit_progress(
         0,
         f"属性标注准备完成：缓存 {len(instances) - len(pending)}，待处理 {len(pending)}",

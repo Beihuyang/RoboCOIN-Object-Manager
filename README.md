@@ -1,5 +1,8 @@
 # RoboCOIN Object Manager
 
+使用 A800 job 只执行模型推理时，参见 [SERVER_MODE.md](SERVER_MODE.md)。服务器
+入口不会运行图像补全，并使用单卡 80GB 高显存配置。
+
 从 RoboCOIN 视频构建物体库的实验性流水线。项目目标是：默认在视频首帧检测物体，必要时由人工追加多张关键帧补充后续出现的物体，随后跟踪这些物体、选择代表帧、提取属性、生成去重候选，并通过人工界面审核结果。
 
 面向实际标注与审核人员的操作说明见：[数采员使用手册](docs/DATA_COLLECTOR_GUIDE.md)。迁移到其他机器时参照：[快速部署指南](docs/DEPLOYMENT_GUIDE.md)。

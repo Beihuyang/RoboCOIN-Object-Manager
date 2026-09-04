@@ -14,11 +14,11 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-import clip
 import numpy as np
 import torch
 from PIL import Image
 from project_paths import resolve_project_path
+from hardware_profiles import PROFILES, default_profile_name, get_profile
 
 BASE_DIR = Path(__file__).resolve().parent
 WORK_DIR = BASE_DIR / "objects" / "new_library_work"
@@ -179,6 +179,8 @@ def ensure_clip_checkpoint(download_root: Path) -> Path:
 
 
 def load_clip_model(download_root: Path):
+    import clip
+
     ensure_clip_checkpoint(download_root)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, preprocess = clip.load(
@@ -223,21 +225,30 @@ def controlled_attribute_similarity(left: dict, right: dict) -> float:
     return float(sum(scores) / len(scores))
 
 
-def compute_embeddings(items: list[dict], clip_dir: Path):
+def compute_embeddings(items: list[dict], clip_dir: Path, batch_size: int = 16):
+    import clip
+
     emit_progress(2, "正在加载 CLIP ViT-L/14")
     model, preprocess, device = load_clip_model(clip_dir)
     visual, text = [], []
-    for completed, item in enumerate(items, start=1):
-        with Image.open(resolve_project_path(item["best_quality_path"])) as source:
-            image_batch = preprocess(source.convert("RGB")).unsqueeze(0).to(device)
-        tokens = clip.tokenize([attribute_text(item)]).to(device)
+    for start in range(0, len(items), batch_size):
+        chunk = items[start:start + batch_size]
+        images = []
+        for item in chunk:
+            with Image.open(resolve_project_path(item["best_quality_path"])) as source:
+                images.append(preprocess(source.convert("RGB")))
+        image_batch = torch.stack(images).to(device, non_blocking=True)
+        tokens = clip.tokenize([attribute_text(item) for item in chunk]).to(
+            device, non_blocking=True
+        )
         with torch.inference_mode():
-            image_feature = model.encode_image(image_batch).float()[0]
-            image_feature = image_feature / image_feature.norm()
-            text_feature = model.encode_text(tokens).float()[0]
-            text_feature = text_feature / text_feature.norm()
-        visual.append(image_feature.cpu().numpy())
-        text.append(text_feature.cpu().numpy())
+            image_features = model.encode_image(image_batch).float()
+            image_features /= image_features.norm(dim=-1, keepdim=True)
+            text_features = model.encode_text(tokens).float()
+            text_features /= text_features.norm(dim=-1, keepdim=True)
+        visual.extend(image_features.cpu().numpy())
+        text.extend(text_features.cpu().numpy())
+        completed = min(start + len(chunk), len(items))
         emit_progress(
             5 + 50 * completed / max(1, len(items)),
             f"CLIP 特征计算 {completed}/{len(items)}",
@@ -586,11 +597,30 @@ def main():
     parser.add_argument("--attribute-threshold", type=float, default=0.50)
     parser.add_argument("--clip-dir", type=Path, default=DEFAULT_CLIP_DIR)
     parser.add_argument(
+        "--hardware-profile", choices=tuple(PROFILES), default=default_profile_name()
+    )
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument(
+        "--embeddings-only", action="store_true",
+        help="Run only CLIP GPU inference; do pair search/library building locally",
+    )
+    parser.add_argument(
+        "--reuse-embeddings", action="store_true",
+        help="Reuse server-produced CLIP features and run CPU post-processing",
+    )
+    parser.add_argument(
         "--reuse-candidates",
         action="store_true",
         help="Reuse existing attribute+CLIP candidates and apply manual decisions",
     )
     args = parser.parse_args()
+    if args.embeddings_only and args.reuse_embeddings:
+        parser.error("--embeddings-only and --reuse-embeddings are mutually exclusive")
+    profile = get_profile(args.hardware_profile)
+    if args.batch_size is None:
+        args.batch_size = profile.clip_batch_size
+    if args.batch_size <= 0:
+        parser.error("--batch-size must be positive")
     if not -1 <= args.clip_recall_threshold <= 1:
         parser.error("--clip-recall-threshold must be between -1 and 1")
     if not 0 <= args.attribute_threshold <= 1:
@@ -649,14 +679,32 @@ def main():
         print(f"New library: {len(library)} object(s) -> {LIBRARY_DIR / 'index.json'}")
         return
 
-    visual, text = compute_embeddings(items, args.clip_dir)
-    np.savez_compressed(
-        EMBEDDINGS_PATH,
-        instance_ids=np.asarray([item["instance_id"] for item in items]),
-        visual=visual,
-        text=text,
-    )
+    print(f"Hardware profile: {profile.name}; CLIP batch size: {args.batch_size}")
+    instance_ids = np.asarray([item["instance_id"] for item in items])
+    if args.reuse_embeddings:
+        if not EMBEDDINGS_PATH.is_file():
+            raise FileNotFoundError(f"Missing server output: {EMBEDDINGS_PATH}")
+        saved = np.load(EMBEDDINGS_PATH)
+        if saved["instance_ids"].tolist() != instance_ids.tolist():
+            raise RuntimeError(
+                "CLIP embeddings do not match current attributes; rerun server clip"
+            )
+        visual = np.asarray(saved["visual"], np.float32)
+        text = np.asarray(saved["text"], np.float32)
+        emit_progress(55, f"Reused CLIP embeddings for {len(items)} objects")
+    else:
+        visual, text = compute_embeddings(items, args.clip_dir, args.batch_size)
+        np.savez_compressed(
+            EMBEDDINGS_PATH,
+            instance_ids=instance_ids,
+            visual=visual,
+            text=text,
+        )
     INSTANCES_PATH.write_text(json.dumps(items, indent=2, ensure_ascii=False))
+    if args.embeddings_only:
+        emit_progress(100, f"CLIP embeddings complete: {len(items)} objects")
+        print(f"Embeddings only: {EMBEDDINGS_PATH}")
+        return
     def report_candidate_search(completed: int, total: int) -> None:
         emit_progress(
             55 + 7 * completed / max(1, total),
