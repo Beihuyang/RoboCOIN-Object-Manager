@@ -58,7 +58,7 @@ CAMERA_KEYWORDS = (
     "high", "head", "front", "chest", "center", "ego", "left", "right"
 )
 FIRST_FRAME_EXTRACTION_METHOD = "source_frame_selected_sr_2k_v1"
-DISCOVERY_CACHE_VERSION = 17
+DISCOVERY_CACHE_VERSION = 18
 TRACK_FRAME_EXTRACTION_METHOD = "source_discovery_frames_interval_v3"
 PROGRESS_PREFIX = "@@PROGRESS "
 ROBOT_ARM_PROMPTS = ("robot arm", "robot gripper", "robot hand")
@@ -118,7 +118,6 @@ QUALITY_FILTERS = {
     "min_relative_area": 0.25,
     "min_stability": 0.50,
     "min_sharpness_quantile": 0.10,
-    "exclude_boundary": True,
 }
 
 
@@ -602,34 +601,6 @@ def _filter_robot_arm_overlaps(
     return kept, removed
 
 
-def _filter_image_boundary_masks(
-    detections: list[dict],
-) -> tuple[list[dict], list[dict]]:
-    """Remove first-frame masks touching any outer image edge."""
-    kept = []
-    removed = []
-    for detection in detections:
-        mask = detection["mask"]
-        touched_edges = []
-        if mask[0, :].any():
-            touched_edges.append("top")
-        if mask[-1, :].any():
-            touched_edges.append("bottom")
-        if mask[:, 0].any():
-            touched_edges.append("left")
-        if mask[:, -1].any():
-            touched_edges.append("right")
-        if touched_edges:
-            removed.append({
-                "bbox": detection["bbox"],
-                "score": detection["score"],
-                "touched_edges": touched_edges,
-            })
-        else:
-            kept.append(detection)
-    return kept, removed
-
-
 def _mask_duplicate(a: np.ndarray, b: np.ndarray) -> tuple[bool, float, float]:
     intersection = int(np.logical_and(a, b).sum())
     if not intersection:
@@ -651,41 +622,64 @@ def _mask_duplicate(a: np.ndarray, b: np.ndarray) -> tuple[bool, float, float]:
 def merge_cross_prompt_detections(
     detections_by_prompt: list[tuple[str, list[dict]]],
 ) -> tuple[list[dict], list[dict]]:
-    """Keep base-prompt masks first and add only novel semantic masks.
+    """Group overlapping cross-prompt masks and keep the highest-confidence one."""
+    candidates = [
+        dict(detection, prompt=detection.get("prompt", prompt))
+        for prompt, detections in detections_by_prompt
+        for detection in detections
+    ]
+    parent = list(range(len(candidates)))
 
-    Confidence scores from different text prompts are not calibrated against one
-    another, so a later semantic result never replaces an earlier ``object`` mask.
-    """
+    def root(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = root(left), root(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for left in range(len(candidates)):
+        for right in range(left + 1, len(candidates)):
+            duplicate, _iou, _containment = _mask_duplicate(
+                candidates[left]["mask"], candidates[right]["mask"]
+            )
+            if duplicate:
+                union(left, right)
+
+    components: dict[int, list[dict]] = {}
+    for index, candidate in enumerate(candidates):
+        components.setdefault(root(index), []).append(candidate)
+
     kept: list[dict] = []
     duplicates: list[dict] = []
-    for prompt, detections in detections_by_prompt:
-        for detection in detections:
-            matched = None
-            for kept_index, existing in enumerate(kept):
-                duplicate, iou, containment = _mask_duplicate(
-                    detection["mask"], existing["mask"]
-                )
-                if duplicate:
-                    matched = (kept_index, iou, containment)
-                    break
-            if matched is None:
-                item = dict(detection)
-                item["matched_prompts"] = [{
-                    "prompt": prompt,
-                    "score": float(detection["score"]),
-                }]
-                kept.append(item)
+    ranked_components = sorted(
+        components.values(),
+        key=lambda component: max(float(item["score"]) for item in component),
+        reverse=True,
+    )
+    for component in ranked_components:
+        representative = max(component, key=lambda item: float(item["score"]))
+        item = dict(representative)
+        item["matched_prompts"] = [
+            {"prompt": candidate["prompt"], "score": float(candidate["score"])}
+            for candidate in component
+        ]
+        kept_index = len(kept)
+        kept.append(item)
+        for candidate in component:
+            if candidate is representative:
                 continue
-            kept_index, iou, containment = matched
-            kept[kept_index].setdefault("matched_prompts", []).append({
-                "prompt": prompt,
-                "score": float(detection["score"]),
-            })
+            _duplicate, iou, containment = _mask_duplicate(
+                candidate["mask"], representative["mask"]
+            )
             duplicates.append({
-                "prompt": prompt,
-                "score": float(detection["score"]),
+                "prompt": candidate["prompt"],
+                "score": float(candidate["score"]),
                 "kept_index": kept_index,
-                "kept_prompt": kept[kept_index]["prompt"],
+                "kept_prompt": item["prompt"],
                 "mask_iou": iou,
                 "containment": containment,
             })
@@ -724,6 +718,7 @@ def detect_first_frame(
         raise ValueError("SAM3 discovery requires at least one noun")
     detections_by_prompt = []
     raw_counts = {}
+    state = None
     if RUNTIME_PROFILE.sam3_official_prompt_batch and len(prompts) > 1:
         from sam3_official_batch import infer_text_queries
         from super_resolution import upscale_for_sam3
@@ -765,7 +760,7 @@ def detect_first_frame(
         detections_by_prompt
     )
     report = {
-        "enabled": False,
+        "enabled": bool(exclude_robot_arms),
         "prompts": list(ROBOT_ARM_PROMPTS),
         "threshold": robot_arm_threshold,
         "overlap_threshold": robot_arm_overlap,
@@ -786,15 +781,27 @@ def detect_first_frame(
             "cross_prompt_duplicates_removed": len(duplicate_matches),
             "duplicate_matches": duplicate_matches,
         },
-        "skip_reason": "noun-only discovery does not run robot prompts",
     }
     kept = detections
+    if exclude_robot_arms:
+        if state is None:
+            with torch.inference_mode(), torch.autocast(
+                "cuda", dtype=torch.bfloat16, cache_enabled=False
+            ):
+                state = _set_sam3_image(processor, image)
+        robot_regions = _detect_robot_regions_from_state(
+            state, processor, height, width, robot_arm_threshold
+        )
+        kept, removed = _filter_robot_arm_overlaps(
+            kept, robot_regions, robot_arm_overlap
+        )
+        report["regions_detected"] = len(robot_regions)
+        report["removed"] = removed
     report["objects_removed"] = len(report["removed"])
-    kept, boundary_removed = _filter_image_boundary_masks(kept)
     report["boundary_filter"] = {
-        "enabled": True,
-        "objects_removed": len(boundary_removed),
-        "removed": boundary_removed,
+        "enabled": False,
+        "objects_removed": 0,
+        "removed": [],
     }
     return kept, report
 
@@ -1170,7 +1177,6 @@ def refine_manual_boxes(
         item["bbox"] = [float(value) for value in box]
         item["score"] = float(score)
         item["source"] = "sam3_box_refined"
-        item["prompt"] = "interactive_box_points"
         item["refinement_prompt"] = {
             "mode": "native_interactive_box_points",
             "box_prompt": True,
@@ -1506,8 +1512,6 @@ def filter_quality_candidates(candidates: list[FrameCandidate]) -> tuple[list[Fr
             reasons.append("area_stability")
         if item.sharpness < sharpness_cutoff:
             reasons.append("sharpness")
-        if QUALITY_FILTERS["exclude_boundary"] and item.touches_boundary:
-            reasons.append("image_boundary")
         if reasons:
             rejected[str(item.frame_index)] = reasons
         else:
@@ -1580,6 +1584,7 @@ def export_tracks(
     prompt: str,
     tracker_backend: str,
     tracker_model: str,
+    object_labels: dict[int, dict] | None = None,
 ) -> dict:
     output_dir = OUTPUT_ROOT / video_key(video_path) / f"tracker_{tracker_backend}"
     output_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -1635,8 +1640,11 @@ def export_tracks(
                 representative_frame,
                 scene_path,
             )
+            label_metadata = (object_labels or {}).get(obj_id, {})
             track_data = final_paths({
                 "object_id": obj_id,
+                "prompt": label_metadata.get("prompt", "object"),
+                "matched_prompts": label_metadata.get("matched_prompts", []),
                 "best_quality": {**candidate_metadata(best), **context_metadata},
                 "quality_weights": dict(QUALITY_WEIGHTS),
                 "quality_filter": filter_report,
@@ -1825,6 +1833,13 @@ def process_video_sam31_mask(
         "reviewed_object_masks",
         "sam3",
         "sam3.1_multiplex",
+        {
+            int(detection.get("object_id", index)): {
+                "prompt": detection.get("prompt", "object"),
+                "matched_prompts": detection.get("matched_prompts", []),
+            }
+            for index, detection in enumerate(detections)
+        },
     )
 
 
@@ -1847,7 +1862,6 @@ def discover_initial_masks(
         "no_objects": [],
         "failed": [],
         "robot_arms_removed": [],
-        "boundary_masks_removed": [],
     }
     uncached = []
     cached_to_filter = []
@@ -1885,15 +1899,6 @@ def discover_initial_masks(
                 )
                 if removed:
                     report["robot_arms_removed"].append((video_path, removed))
-                boundary_removed = int(
-                    cached_manifest.get("boundary_filter", {}).get(
-                        "objects_removed", 0
-                    )
-                )
-                if boundary_removed:
-                    report["boundary_masks_removed"].append(
-                        (video_path, boundary_removed)
-                    )
             except (OSError, TypeError, ValueError, json.JSONDecodeError):
                 pass
             print(f"Reusing {len(detections)} initial masks: {video_path.name}")
@@ -1982,13 +1987,6 @@ def discover_initial_masks(
                     )
                 else:
                     tqdm.write(f"  No objects detected; skipped: {video_path}")
-                boundary_removed = int(
-                    robot_filter.get("boundary_filter", {}).get("objects_removed", 0)
-                )
-                if boundary_removed:
-                    report["boundary_masks_removed"].append(
-                        (video_path, boundary_removed)
-                    )
                 continue
             save_initial_masks(
                 video_path,
@@ -2001,13 +1999,6 @@ def discover_initial_masks(
             if robot_filter["objects_removed"]:
                 report["robot_arms_removed"].append(
                     (video_path, robot_filter["objects_removed"])
-                )
-            boundary_removed = int(
-                robot_filter.get("boundary_filter", {}).get("objects_removed", 0)
-            )
-            if boundary_removed:
-                report["boundary_masks_removed"].append(
-                    (video_path, boundary_removed)
                 )
             detections_by_video[video_path] = detections
             report["detected"].append(video_path)
@@ -2062,9 +2053,6 @@ def main():
     parser.add_argument("--quality-min-relative-area", type=float, default=0.25)
     parser.add_argument("--quality-min-stability", type=float, default=0.50)
     parser.add_argument("--quality-min-sharpness-quantile", type=float, default=0.10)
-    parser.add_argument(
-        "--quality-exclude-boundary", action=argparse.BooleanOptionalAction, default=True
-    )
     parser.add_argument(
         "--continue-on-error",
         action="store_true",
@@ -2123,7 +2111,6 @@ def main():
         "min_relative_area": args.quality_min_relative_area,
         "min_stability": args.quality_min_stability,
         "min_sharpness_quantile": args.quality_min_sharpness_quantile,
-        "exclude_boundary": args.quality_exclude_boundary,
     })
     print(f"Quality weights: {QUALITY_WEIGHTS}")
 
@@ -2248,7 +2235,6 @@ def main():
         no_object_videos = discovery_report["no_objects"]
         failed_videos = discovery_report["failed"]
         robot_arms_removed = discovery_report["robot_arms_removed"]
-        boundary_masks_removed = discovery_report["boundary_masks_removed"]
         print("\n=== Discovery report ===")
         print(f"Requested videos: {len(videos)}")
         print(f"Newly detected:   {detected_count}")
@@ -2264,10 +2250,6 @@ def main():
             print("Robot-arm removals by video:")
             for video_path, removed in robot_arms_removed:
                 print(f"  - {video_path}: {removed}")
-        print(
-            "Boundary-touching masks removed: "
-            f"{sum(removed for _, removed in boundary_masks_removed)}"
-        )
         if no_object_videos:
             print("Videos with no detected objects:")
             for video_path in no_object_videos:

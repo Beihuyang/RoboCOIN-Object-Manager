@@ -76,6 +76,19 @@
         ]}
       ]
     },
+    "size": {
+      "id": "size",
+      "label": "unknown",
+      "definition": "the visually supportable relative size description",
+      "children": [
+        {"id": "size.unknown", "label": "unknown", "definition": "relative size cannot be judged reliably"},
+        {"id": "size.tiny", "label": "tiny", "definition": "extremely small relative to comparable objects"},
+        {"id": "size.small", "label": "small", "definition": "small relative to comparable objects"},
+        {"id": "size.medium", "label": "medium", "definition": "medium-sized relative to comparable objects"},
+        {"id": "size.large", "label": "large", "definition": "large relative to comparable objects"},
+        {"id": "size.huge", "label": "huge", "definition": "extremely large relative to comparable objects"}
+      ]
+    },
     "material": {
       "id": "material",
       "label": "unknown",

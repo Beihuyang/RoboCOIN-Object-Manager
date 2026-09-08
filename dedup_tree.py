@@ -20,7 +20,7 @@ TREE_PATH = WORK_DIR / "dedup_tree_layout.json"
 TREE_ARCHIVE_DIR = WORK_DIR / "dedup_tree_archive"
 DEFAULT_CLIP_THRESHOLD = 0.82
 DEFAULT_ATTRIBUTE_THRESHOLD = 0.50
-ATTRIBUTE_KEYS = ("color", "material", "shape", "texture")
+ATTRIBUTE_KEYS = ("color", "size", "material", "shape", "texture")
 PROGRESS_PREFIX = "@@PROGRESS "
 
 
@@ -34,7 +34,9 @@ def emit_progress(percent: float, message: str) -> None:
 
 def _node_summary(node: dict) -> dict:
     return {
-        key: node[key] for key in ("id", "label", "definition") if key in node
+        key: node[key]
+        for key in ("id", "label", "definition", "label_zh", "definition_zh")
+        if key in node
     }
 
 

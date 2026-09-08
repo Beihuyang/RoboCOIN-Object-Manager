@@ -41,8 +41,8 @@ CLIP_MODEL_URL = (
 CLIP_MODEL_SIZE = 932_768_134
 CLIP_MODEL_SHA256 = "b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836"
 PROGRESS_PREFIX = "@@PROGRESS "
-ATTRIBUTE_KEYS = ("category", "color", "material", "shape", "texture")
-CONTROLLED_ATTRIBUTE_KEYS = ("color", "material", "shape", "texture")
+ATTRIBUTE_KEYS = ("category", "color", "size", "material", "shape", "texture")
+CONTROLLED_ATTRIBUTE_KEYS = ("color", "size", "material", "shape", "texture")
 
 
 def items_fingerprint(items: list[dict]) -> str:

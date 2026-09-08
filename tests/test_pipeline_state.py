@@ -6,7 +6,7 @@ from PIL import Image
 
 import stage1_track_select
 import stage4_dedup
-from dedup_tree import generate_layout, inherit_unchanged_adjustments
+from dedup_tree import generate_layout, inherit_unchanged_adjustments, move_instance
 from stage4_dedup import items_fingerprint
 
 
@@ -118,6 +118,34 @@ def test_changed_instance_does_not_inherit_old_category_placement():
     inherited = inherit_unchanged_adjustments(previous, generated)
     cluster = next(c for c in inherited["clusters"] if "one" in c["member_ids"])
     assert cluster["node_id"] == "category.bowl"
+
+
+def test_move_trashed_object_back_to_root_creates_manual_cluster():
+    layout = {
+        "nodes": [{"id": "entity.n.01", "label": "entity", "parent_id": None}],
+        "clusters": [],
+        "trash_instance_ids": ["one"],
+    }
+
+    move_instance(layout, "one", None, "entity.n.01")
+
+    assert layout["trash_instance_ids"] == []
+    assert len(layout["clusters"]) == 1
+    assert layout["clusters"][0]["node_id"] == "entity.n.01"
+    assert layout["clusters"][0]["member_ids"] == ["one"]
+    assert layout["clusters"][0]["origin"] == "manual"
+
+
+def test_category_tree_preserves_chinese_display_fields():
+    item = _item("one", "cup")
+    item["category_path"][0].update({
+        "label_zh": "实体", "definition_zh": "独立存在的事物"
+    })
+
+    generated = generate_layout([item])
+    root = next(node for node in generated["nodes"] if node["id"] == "entity.n.01")
+    assert root["label_zh"] == "实体"
+    assert root["definition_zh"] == "独立存在的事物"
 
 
 def test_tracking_revision_guard_keeps_new_edits_dirty(tmp_path, monkeypatch):

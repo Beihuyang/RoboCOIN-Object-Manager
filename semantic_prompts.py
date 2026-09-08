@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 
 
-PROMPT_STRATEGY = "object_dataset_and_episode_meta_nouns_v6"
+PROMPT_STRATEGY = "object_all_metadata_physical_nouns_v7"
 DEFAULT_MAX_SEMANTIC_PROMPTS = 6
 
 # Robot/platform identifiers and task grammar are metadata, not visible targets.
@@ -40,13 +40,21 @@ GENERIC_WORDS = {"object", "objects", "part", "parts", "task", "scene"}
 NON_TARGET_WORDS = {
     "arrangement", "beauty", "both", "care", "classification", "closest", "color",
     "conditioning", "data", "error", "front", "hotel", "interference", "item", "items",
-    "down", "large", "leftover", "line", "little", "liquid", "middle", "model", "number", "off",
+    "down", "leftover", "line", "little", "liquid", "middle", "model", "number", "off",
     "onto", "or", "out", "personal", "service", "services", "setting", "side", "singletry",
-    "powder", "small", "solid", "stuff", "test", "then", "touching", "unordered", "water", "wet",
+    "powder", "solid", "stuff", "test", "then", "touching", "unordered", "water", "wet",
     # Background/support surfaces are deliberately not semantic discovery targets.
     "desktop", "floor", "table",
     # Robot anatomy must not be reintroduced as a task-object prompt.
     "arm", "face", "hand", "hands",
+    # Abstract/spatial/discourse nouns that occur frequently in generated
+    # scene descriptions but cannot be grounded as independent objects.
+    "area", "center", "closer", "corner", "detail", "element", "end",
+    "instance", "interaction", "location", "null", "pair", "piece",
+    "point", "position", "power", "reference", "relation", "relationship",
+    "section", "setup", "side", "space", "spot", "surface", "time", "view",
+    # Image/annotation and robot-control vocabulary, not scene targets.
+    "abnormal", "grasp", "gripper", "image", "recognition", "static",
 }
 COLOR_AND_SIZE_WORDS = {
     "black", "blue", "brown", "canned", "gray", "green", "grey", "large", "orange",
@@ -55,13 +63,15 @@ COLOR_AND_SIZE_WORDS = {
 AMBIGUOUS_NOUN_COLORS = {"orange"}
 KNOWN_COMPOUNDS = {
     "battery box", "bluetooth speaker", "building block", "cake plate",
-    "coffee bean", "cookie cup", "dog doll", "electric kettle", "ice cream",
+    "cardboard box", "coffee bean", "cookie cup", "dog doll", "electric kettle",
+    "glass cup", "ice cream", "measuring cup",
     "marker pen", "microwave oven", "mobile phone", "paper box", "power bank",
-    "sensor card", "storage box", "table tennis ball", "takeout bag", "takeout box",
-    "tennis ball", "test tube", "tissue box", "toy car", "water bottle", "wet wipe",
+    "paper cup", "plastic bag", "rubik cube", "sensor card", "soda bottle",
+    "storage box", "table tennis ball", "takeout bag", "takeout box", "tennis ball",
+    "test tube", "tissue box", "toy car", "wallpaper knife", "water bottle", "wet wipe",
 }
 UNKNOWN_TARGETS = {
-    "baozi", "bluetooth", "electronics", "nightstand", "rubik", "teaset",
+    "baozi", "electronics", "nightstand", "teaset",
 }
 TEXT_PHYSICAL_TASK_WORDS = {"brush", "scoop", "stamp"}
 TEXT_STOP_WORDS = {
@@ -71,14 +81,32 @@ TEXT_STOP_WORDS = {
     "point", "rectangle", "round", "same", "section", "serving", "seven",
     "share", "six", "there", "three", "through", "toward", "two", "under",
     "upon", "view", "well",
+    "abnormal", "across", "additional", "additionally", "adjacent", "all",
+    "along", "also", "appear", "are", "arranged", "attached", "being",
+    "beyond", "but", "can", "centered", "centrally", "closer", "clustered",
+    "contain", "described", "different", "direct", "directly", "distinct",
+    "duplicate", "either", "establishing", "exact", "far", "finally",
+    "first", "following", "found", "further", "general", "has", "have",
+    "identical", "immediate", "include", "including", "indicating", "its",
+    "itself", "labeled", "last", "lastly", "likely", "located", "mentioned",
+    "more", "multiple", "nearby", "next", "not", "noted", "occupy",
+    "occupying", "opposite", "other", "overlapping", "placed", "positioned",
+    "positional", "possibly", "present", "rear", "rectangle", "rectangular",
+    "relative", "relatively", "relationship", "respective", "respectively", "same", "second",
+    "separate", "several", "sharing", "shaped", "similar", "similarly",
+    "single", "situated", "slightly", "smaller", "some", "spatial", "specific",
+    "specifically", "specified", "spread", "static", "that", "their", "them",
+    "these", "they", "third", "this", "throughout", "together", "transfer",
+    "unspecified", "various", "where", "which", "while", "without", "wooden",
+    "your",
 }
-TEXT_SOURCE_FILES = (
-    "meta/tasks.jsonl",
-    "meta/episodes.jsonl",
-    "annotations/scene_annotations.jsonl",
-    "annotations/subtask_annotations.jsonl",
-    "annotations/subtasks.jsonl",
-)
+TEXT_SOURCE_FIELDS = {
+    "meta/tasks.jsonl": ("task",),
+    "meta/episodes.jsonl": ("tasks",),
+    "annotations/scene_annotations.jsonl": ("scene", "scene_annotation"),
+    "annotations/subtask_annotations.jsonl": ("subtask",),
+    "annotations/subtasks.jsonl": ("subtask",),
+}
 PHYSICAL_LEXNAMES = {
     "noun.animal", "noun.artifact", "noun.communication", "noun.food",
     "noun.person", "noun.plant", "noun.shape",
@@ -86,6 +114,15 @@ PHYSICAL_LEXNAMES = {
 SELECTED_SUBSTANCES = {
     "cardboard", "garbage", "glass", "iron", "marble", "paper", "sponge",
     "straw", "tissue", "trash", "wallpaper",
+}
+FALLBACK_OBJECT_WORDS = {
+    "apple", "bag", "banana", "basket", "bean", "book", "bottle", "bowl",
+    "box", "bread", "brush", "cabinet", "cake", "can", "card", "cloth",
+    "container", "cookie", "cup", "cube", "doll", "egg", "fruit", "glass",
+    "hammer", "kettle", "lemon", "lid", "marker", "microwave", "mouse",
+    "oven", "paper", "peach", "pen", "phone", "plate", "pot", "potato",
+    "rack", "sensor", "shelf", "speaker", "spoon", "sponge", "straw",
+    "tube", "tablecloth", "tissue", "towel", "toy", "tray", "wipe",
 }
 
 
@@ -146,11 +183,16 @@ def _is_target_word(token: str) -> bool:
         return True
     wordnet = _wordnet()
     if wordnet is None:
-        return len(token) > 2
-    return any(
-        synset.lexname() in PHYSICAL_LEXNAMES
-        for synset in wordnet.synsets(token, pos=wordnet.NOUN)
-    )
+        # A missing optional corpus must fail closed for free-form annotation
+        # prose. Otherwise adjectives, relations and verbs all become prompts.
+        return token in FALLBACK_OBJECT_WORDS
+    physical_entity = wordnet.synset("physical_entity.n.01")
+    for synset in wordnet.synsets(token, pos=wordnet.NOUN):
+        if synset == physical_entity:
+            return True
+        if physical_entity in set(synset.closure(lambda value: value.hypernyms())):
+            return True
+    return False
 
 
 def dataset_name_from_video(video_path: Path, video_root: Path) -> str:
@@ -266,6 +308,7 @@ def semantic_nouns_from_text(text: str) -> list[str]:
     words = [_singular(token) for token in _tokens(text)]
     phrases: list[str] = []
     compound_members: set[int] = set()
+    noun_spans: list[tuple[int, int, str]] = []
 
     def add(value: str) -> None:
         value = value.strip().replace("_", " ")
@@ -279,6 +322,7 @@ def semantic_nouns_from_text(text: str) -> list[str]:
             if phrase in KNOWN_COMPOUNDS:
                 add(phrase)
                 compound_members.update(range(index, index + size))
+                noun_spans.append((index, index + size, phrase))
                 continue
             if any(
                 value in TEXT_STOP_WORDS
@@ -291,6 +335,14 @@ def semantic_nouns_from_text(text: str) -> list[str]:
             if _is_wordnet_compound(values):
                 add(phrase)
                 compound_members.update(range(index, index + size))
+                noun_spans.append((index, index + size, phrase))
+
+    # Keep one directly adjacent color/size modifier, while retaining the base
+    # noun phrase as a recall fallback. In "blue yellow large test tube", only
+    # the adjacent "large test tube" is formed; unrelated colors are not chained.
+    for start, _end, phrase in noun_spans:
+        if start > 0 and words[start - 1] in COLOR_AND_SIZE_WORDS:
+            add(f"{words[start - 1]} {phrase}")
 
     for index, word in enumerate(words):
         if index in compound_members:
@@ -308,6 +360,8 @@ def semantic_nouns_from_text(text: str) -> list[str]:
         if word in TASK_WORDS and word not in TEXT_PHYSICAL_TASK_WORDS:
             continue
         if _is_target_word(word):
+            if index > 0 and words[index - 1] in COLOR_AND_SIZE_WORDS:
+                add(f"{words[index - 1]} {word}")
             add(word)
     return phrases
 
@@ -322,11 +376,12 @@ def _json_strings(value) -> list[str]:
     return []
 
 
-@lru_cache(maxsize=1024)
-def _dataset_texts(dataset_dir: str) -> tuple[str, ...]:
+@lru_cache(maxsize=4096)
+def _dataset_texts(dataset_dir: str, episode_index: int | None = None) -> tuple[str, ...]:
+    """Read only human-language fields, never arbitrary JSON string values."""
     root = Path(dataset_dir)
     texts = []
-    for relative in TEXT_SOURCE_FILES:
+    for relative, fields in TEXT_SOURCE_FIELDS.items():
         path = root / relative
         if not path.is_file():
             continue
@@ -334,14 +389,31 @@ def _dataset_texts(dataset_dir: str) -> tuple[str, ...]:
             with path.open() as handle:
                 for line in handle:
                     if line.strip():
-                        texts.extend(_json_strings(json.loads(line)))
+                        row = json.loads(line)
+                        row_index = None
+                        if relative == "meta/episodes.jsonl":
+                            row_index = row.get("episode_index")
+                        elif relative == "annotations/scene_annotations.jsonl":
+                            row_index = row.get("episode_idx", row.get("scene_index"))
+                        if (
+                            episode_index is not None
+                            and row_index is not None
+                            and int(row_index) != episode_index
+                        ):
+                            continue
+                        for field in fields:
+                            texts.extend(_json_strings(row.get(field)))
         except (OSError, json.JSONDecodeError):
             continue
     return tuple(texts)
 
 
 def _deduplicate_compound_nouns(nouns: list[str]) -> list[str]:
-    compound_heads = {value.rsplit(" ", 1)[-1] for value in nouns if " " in value}
+    compound_heads = {
+        value.rsplit(" ", 1)[-1]
+        for value in nouns
+        if " " in value and value.split(" ", 1)[0] not in COLOR_AND_SIZE_WORDS
+    }
     return [value for value in nouns if " " in value or value not in compound_heads]
 
 
@@ -357,7 +429,8 @@ def all_annotation_noun_prompts(video_path: Path, video_root: Path) -> list[str]
 
     for value in semantic_prompts_from_dataset(dataset_name, max_prompts=10_000):
         add(value)
-    for text in _dataset_texts(str(dataset_dir.resolve())):
+    episode_index = _episode_index_from_video(video_path)
+    for text in _dataset_texts(str(dataset_dir.resolve()), episode_index):
         for value in semantic_nouns_from_text(text):
             add(value)
     nouns = _deduplicate_compound_nouns(nouns)
@@ -401,22 +474,11 @@ def _task_texts_for_episode(dataset_dir: Path, episode_index: int | None) -> lis
 
 
 def semantic_noun_prompts(video_path: Path, video_root: Path) -> list[str]:
-    """Return ``object`` plus dataset and episode-aligned meta noun prompts."""
-    dataset_name = dataset_name_from_video(video_path, video_root)
-    dataset_dir = video_root / dataset_name
-    nouns: list[str] = []
-
-    def add(value: str) -> None:
-        if value and value != "object" and value not in nouns:
-            nouns.append(value)
-
-    for value in semantic_prompts_from_dataset(dataset_name, max_prompts=10_000):
-        add(value)
-    episode_index = _episode_index_from_video(video_path)
-    for text in _task_texts_for_episode(dataset_dir, episode_index):
-        for value in semantic_nouns_from_text(text):
-            add(value)
-    nouns = _deduplicate_compound_nouns(nouns)
+    """Return ``object`` plus nouns from names, meta, scenes, and subtasks."""
+    try:
+        nouns = all_annotation_noun_prompts(video_path, video_root)
+    except ValueError:
+        nouns = []
     return ["object", *nouns]
 
 

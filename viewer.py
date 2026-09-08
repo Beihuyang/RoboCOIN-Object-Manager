@@ -431,7 +431,6 @@ class ReviewJobRequest(BaseModel):
     quality_min_relative_area: float = Field(default=0.25, ge=0, le=1)
     quality_min_stability: float = Field(default=0.50, ge=0, le=1)
     quality_min_sharpness_quantile: float = Field(default=0.10, ge=0, le=1)
-    quality_exclude_boundary: bool = True
 
 
 class ReviewBatchTrackRequest(BaseModel):
@@ -443,7 +442,6 @@ class ReviewBatchTrackRequest(BaseModel):
     quality_min_relative_area: float = Field(default=0.25, ge=0, le=1)
     quality_min_stability: float = Field(default=0.50, ge=0, le=1)
     quality_min_sharpness_quantile: float = Field(default=0.10, ge=0, le=1)
-    quality_exclude_boundary: bool = True
 
 
 class DedupDecision(BaseModel):
@@ -893,6 +891,8 @@ def _dedup_tree_object(item: dict, library_name: str | None = None) -> dict:
         "session_key": item["session_key"],
         "quality_score": item.get("representative_quality_score", 0.0),
         "attributes": item["attributes"],
+        "display_name_zh": item.get("display_name_zh", ""),
+        "attributes_zh": item.get("attributes_zh", {}),
         "category_path": item.get("category_path", []),
         "attribute_paths": item.get("attribute_paths", {}),
         "wordnet_warning": item.get("wordnet_warning"),
@@ -1388,7 +1388,7 @@ def update_library_attributes(obj_id: str, request: AttributeUpdate):
         item = library.get(obj_id)
         if item is None:
             raise HTTPException(status_code=404, detail="新物体库中没有这个对象")
-        allowed = {"category", "color", "material", "shape", "texture"}
+        allowed = {"category", "color", "size", "material", "shape", "texture"}
         attributes = {
             key: value for key, value in request.attributes.items() if key in allowed
         }
@@ -1587,6 +1587,7 @@ def object_link_items(
                 "id": object_id,
                 "category": attributes.get("category", "unknown"),
                 "color": attributes.get("color", "unknown"),
+                "size": attributes.get("size", "unknown"),
                 "material": attributes.get("material", "unknown"),
                 "image_url": "/library/" + canonical.replace(
                     "objects/new_library/", "", 1
@@ -1621,6 +1622,7 @@ def object_link_library_search(
             object_id,
             str(attributes.get("category", "")),
             str(attributes.get("color", "")),
+            str(attributes.get("size", "")),
             str(attributes.get("material", "")),
             str(attributes.get("shape", "")),
         ]).lower()
@@ -1631,6 +1633,7 @@ def object_link_library_search(
             "id": object_id,
             "category": attributes.get("category", "unknown"),
             "color": attributes.get("color", "unknown"),
+            "size": attributes.get("size", "unknown"),
             "material": attributes.get("material", "unknown"),
             "image_url": "/library/" + canonical.replace(
                 "objects/new_library/", "", 1
@@ -2005,8 +2008,6 @@ def start_review_job(request: ReviewJobRequest):
             "--quality-min-relative-area", str(request.quality_min_relative_area),
             "--quality-min-stability", str(request.quality_min_stability),
             "--quality-min-sharpness-quantile", str(request.quality_min_sharpness_quantile),
-            "--quality-exclude-boundary" if request.quality_exclude_boundary
-            else "--no-quality-exclude-boundary",
         ])
         environment = os.environ.copy()
         environment.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
@@ -2112,8 +2113,6 @@ def start_all_tracking_job(request: ReviewBatchTrackRequest):
             "--quality-min-stability", str(request.quality_min_stability),
             "--quality-min-sharpness-quantile",
             str(request.quality_min_sharpness_quantile),
-            "--quality-exclude-boundary" if request.quality_exclude_boundary
-            else "--no-quality-exclude-boundary",
         ]
         environment = os.environ.copy()
         environment.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
@@ -2192,7 +2191,7 @@ def index(
             <img src="{canonical_url}" loading="lazy">
             <div class="card-info">
                 <div class="name">{html_lib.escape(str(obj.get('name', attr.get('category', '?'))))}</div>
-                <div class="sub">{attr.get('color', '?')} · {attr.get('material', '?')}</div>
+                <div class="sub">{attr.get('color', '?')} · {attr.get('size', '?')} · {attr.get('material', '?')}</div>
                 <div class="count">{obj['instance_count']} instances</div>
             </div>
         </a>"""

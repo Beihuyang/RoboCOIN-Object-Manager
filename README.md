@@ -376,11 +376,11 @@ python stage3_attribute.py --tracker sam3
 
 输出为 `objects/new_library_work/attributes.jsonl`。脚本只读取 SAM3 跟踪 manifest 中登记的实例，不读取仓库自带的 `objects/crops` 或旧物体库。重复运行按图片和提示词版本指纹复用缓存；`--force` 可强制重新标注。
 
-属性标注默认以两个物体为一批执行，可通过 `--batch-size` 调整。场景上下文只保留目标附近约两倍范围，但不会缩放物体图或设置额外的像素上限；较大的目标仍使用较大的原始 ROI。如果一批大图超出显存，会自动清理 CUDA 缓存并逐个重试。联合标注返回物体名称提示、WordNet synset 和四项受控属性的最终节点 ID，完整路径由本地词库恢复，避免长路径 JSON 被截断。合法 synset 保持单次 VLM 调用；非法或缺失 synset 才根据名称提示召回最多 24 条合法路径，让 VLM 只返回候选编号，选择失败时扩大到 64 条再重试。默认生成上限仍为 384 tokens，异常联合输出只对该物体使用 768 tokens 单独重试。属性缓存每批原子写入一次。
+属性标注默认以两个物体为一批执行，可通过 `--batch-size` 调整。场景上下文只保留目标附近约两倍范围，但不会缩放物体图或设置额外的像素上限；较大的目标仍使用较大的原始 ROI。如果一批大图超出显存，会自动清理 CUDA 缓存并逐个重试。对于没有具体掩码名称的 `object`，VLM 先只返回普通英文物体名；具体掩码名称则直接复用。本地 WordNet 先查询完整词组，再查询中心名词，只保留 physical entity 名词义项。唯一义项直接采用；多个义项由 VLM 根据图像、名称和定义返回候选编号；没有义项时从 `entity.n.01` 开始，每轮只展示当前节点的直接实体子节点并按编号下降。颜色、尺寸、材质、形状、纹理五项属性另行返回受控节点 ID。属性缓存每批原子写入一次。
 
 保留五个属性字段：`category`、`color`、`material`、`shape`、`texture`，五项都不允许自由文本。受控词库位于 `ontology/attribute_taxonomies.json`：
 
-- `category` 从 `entity.n.01` 开始，只沿标准 WordNet 直接子节点逐层下降，不再加入机器人部件扩展词。机械臂在 Stage 1 由 SAM3 检测后直接从候选掩码中剔除。
+- `category` 只允许沿 `entity.n.01 > physical_entity.n.01` 的实体分支导航，抽象分支不会进入人工树。无名称匹配时逐层选择可以继续进入 `object`、`substance`、`causal_agent` 等当前节点的直接实体子类。机械臂在 Stage 1 由 SAM3 检测后直接从候选掩码中剔除。
 - 如果联合标注生成了不存在的 WordNet synset ID，会根据 `object_name_hint` 本地召回合法候选路径；VLM 只能返回候选编号，程序再从本地 WordNet 恢复路径。第一次选择失败时会扩大候选集合重试。
 - 只有没有候选或两次候选编号选择都失败时才安全回退到 `entity.n.01` 并保存 `wordnet_warning`；人工调整树会显示橙色“WordNet待人工确认”提示。升级后只重新处理旧的 WordNet 警告缓存，其他有效属性缓存继续复用。
 - `color`、`material`、`shape`、`texture` 分别沿自己的受控树逐层选择。例如 `color → green → dark green`。证据不足时停在父节点或选择 `unknown`。
