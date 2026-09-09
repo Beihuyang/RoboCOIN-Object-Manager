@@ -112,6 +112,14 @@ def load_attributes() -> list[dict]:
                 key: override.get(key, item["attributes"].get(key, "unknown"))
                 for key in ATTRIBUTE_KEYS
             }
+            item["attributes_zh"] = {
+                **item.get("attributes_zh", {}),
+                **{
+                    key: str(value).strip()
+                    for key, value in override.items()
+                    if key in ATTRIBUTE_KEYS and str(value).strip()
+                },
+            }
             if (
                 "category" in override
                 and str(item["attributes"]["category"]) != original_category
@@ -121,6 +129,7 @@ def load_attributes() -> list[dict]:
                 item.pop("category_path", None)
                 item.pop("category_synset", None)
                 item.pop("wordnet_warning", None)
+                item["display_name_zh"] = str(override["category"]).strip()
             latest[item["instance_id"]] = item
     return [latest[key] for key in sorted(latest)]
 
@@ -544,6 +553,8 @@ def build_library(items: list[dict], candidates: list[dict], progress_callback=N
                     ),
                     "best_quality_source": item["best_quality_path"],
                     "attributes": item["attributes"],
+                    "display_name_zh": item.get("display_name_zh", ""),
+                    "attributes_zh": item.get("attributes_zh", {}),
                 })
             entry = {
                 "id": uid,
@@ -552,6 +563,8 @@ def build_library(items: list[dict], candidates: list[dict], progress_callback=N
                 "canonical_instance_id": canonical_item["instance_id"],
                 "canonical_selection": "manual" if nominated else "highest_quality",
                 "attributes": merge_attributes(group),
+                "display_name_zh": canonical_item.get("display_name_zh", ""),
+                "attributes_zh": canonical_item.get("attributes_zh", {}),
                 "instance_count": len(group),
                 "instances": copied_instances,
                 "source_instances": source_instances,

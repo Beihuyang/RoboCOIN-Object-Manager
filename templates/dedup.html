@@ -33,10 +33,10 @@ const NODE_W=220,NODE_H=86,COLUMN_X=260,LEVEL_Y=140,MARGIN=70,MIN_SCALE=.005,MAX
 const esc=value=>String(value==null?'':value).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const norm=value=>String(value==null?'':value).toLocaleLowerCase().trim();
 const coreNodeZh={'entity.n.01':'实体','physical_entity.n.01':'物理实体','object.n.01':'具体物体'};
-function nodeZh(node){return node?.label_zh||coreNodeZh[node?.id]||'待生成中文类别名'}
-function nodeDefinitionZh(node){return node?.definition_zh||'中文定义待生成'}
-function objectNameZh(object){return object.display_name_zh||'中文物体名待生成'}
-function attributeZh(object,key){return object.attributes_zh?.[key]||'待翻译'}
+function nodeZh(node){return node?.label_zh||coreNodeZh[node?.id]||'待核对类别'}
+function nodeDefinitionZh(node){return node?.definition_zh||'类别定义待核对'}
+function objectNameZh(object){return object.display_name_zh||'待核对物体'}
+function attributeZh(object,key){return object.attributes_zh?.[key]||'待核对'}
 function showOperation(message,percent=null,cancellable=false){const box=document.getElementById('operationProgress'),fill=document.getElementById('operationFill'),cancel=document.getElementById('cancelPipelineBtn');if(!Number.isFinite(percent))percent=operationCurrentPercent;box.classList.remove('hidden');box.classList.remove('indeterminate');document.getElementById('operationLabel').textContent=message;cancel.hidden=!cancellable;const value=Math.max(0,Math.min(100,Number(percent)));operationCurrentPercent=value;fill.style.width=value+'%';fill.style.transform='none';document.getElementById('operationPercent').textContent=value.toFixed(value<10?1:0)+'%'}
 function hideOperation(delay=0){setTimeout(()=>document.getElementById('operationProgress').classList.add('hidden'),delay)}
 function objectText(object){const a=object.attributes||{},w=object.wordnet_warning||{};return norm([object.name,object.instance_id,object.object_id,object.session_key,a.category,a.color,a.size,a.material,a.shape,a.texture,w.requested_synset,w.fallback_synset].join(' '))}

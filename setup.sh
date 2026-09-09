@@ -4,6 +4,13 @@ set -euo pipefail
 PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_ROOT"
 
+if [[ -f "$PROJECT_ROOT/collector.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$PROJECT_ROOT/collector.env"
+    set +a
+fi
+
 PYTHON_BIN="${PYTHON_BIN:-}"
 if [[ -z "$PYTHON_BIN" ]]; then
     if command -v python3.10 >/dev/null 2>&1; then
@@ -14,6 +21,10 @@ if [[ -z "$PYTHON_BIN" ]]; then
 fi
 VENV_DIR="${VENV_DIR:-$PROJECT_ROOT/.venv}"
 PYTORCH_INDEX_URL="${PYTORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}"
+REQUIRE_CUDA="${REQUIRE_CUDA:-1}"
+export REQUIRE_CUDA
+VLM_BACKEND="${ROBOCOIN_VLM_BACKEND:-local}"
+REQUIREMENTS_FILE="${ROBOCOIN_REQUIREMENTS_FILE:-requirements-project.txt}"
 CHECK_ONLY=0
 if [[ "${1:-}" == "--check" ]]; then
     CHECK_ONLY=1
@@ -28,16 +39,23 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
     exit 1
 fi
 
+PYTHON_VERSION="$($PYTHON_BIN -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+if [[ "$PYTHON_VERSION" != "3.10" ]]; then
+    echo "Unsupported Python: $PYTHON_VERSION (required: 3.10)"
+    echo "Run with: PYTHON_BIN=python3.10 ./setup.sh"
+    exit 1
+fi
+
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
     if [[ "$CHECK_ONLY" -eq 1 ]]; then
         echo "Virtual environment not found: $VENV_DIR"
         exit 1
     fi
     echo "Creating virtual environment: $VENV_DIR"
-    if ! "$PYTHON_BIN" -m venv --system-site-packages "$VENV_DIR"; then
+    if ! "$PYTHON_BIN" -m venv "$VENV_DIR"; then
         echo "python venv is unavailable; installing virtualenv for this user…"
         "$PYTHON_BIN" -m pip install --user --upgrade virtualenv
-        "$PYTHON_BIN" -m virtualenv --system-site-packages "$VENV_DIR"
+        "$PYTHON_BIN" -m virtualenv "$VENV_DIR"
     fi
 fi
 
@@ -45,12 +63,12 @@ VENV_PYTHON="$VENV_DIR/bin/python"
 if [[ "$CHECK_ONLY" -eq 0 ]]; then
     "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel
 
-    if ! "$VENV_PYTHON" -c 'import torch, torchvision' >/dev/null 2>&1; then
+    if ! "$VENV_PYTHON" -c 'import torch, torchvision; assert torch.version.cuda' >/dev/null 2>&1; then
         echo "Installing PyTorch/TorchVision from: $PYTORCH_INDEX_URL"
         "$VENV_PYTHON" -m pip install torch torchvision --index-url "$PYTORCH_INDEX_URL"
     fi
 
-    "$VENV_PYTHON" -m pip install --no-build-isolation -r requirements-project.txt
+    "$VENV_PYTHON" -m pip install --no-build-isolation -r "$REQUIREMENTS_FILE"
     "$VENV_PYTHON" -m pip install -e ./sam3
     if ! "$VENV_PYTHON" -c 'import clip' >/dev/null 2>&1; then
         "$VENV_PYTHON" -m pip install git+https://github.com/openai/CLIP.git
@@ -81,12 +99,15 @@ fi
 
 "$VENV_PYTHON" - <<'PY'
 import importlib
+import os
 import sys
 
-required = (
+required = [
     "torch", "torchvision", "cv2", "numpy", "PIL", "fastapi",
-    "uvicorn", "transformers", "nltk", "clip", "sam3",
-)
+    "uvicorn", "nltk", "clip", "sam3",
+]
+if os.environ.get("ROBOCOIN_VLM_BACKEND", "local") == "local":
+    required.append("transformers")
 failed = []
 for name in required:
     try:
@@ -107,20 +128,32 @@ print(f"CUDA:    {torch.cuda.is_available()}")
 if torch.cuda.is_available():
     print(f"GPU:     {torch.cuda.get_device_name(0)}")
 else:
-    print("Warning: CUDA is unavailable; SAM3/Qwen inference will be very slow or unusable.")
+    print("CUDA is unavailable; SAM3/SAM3.1 inference cannot run in the collector workflow.")
+    if os.environ.get("REQUIRE_CUDA", "1") == "1":
+        raise SystemExit(1)
 PY
 
 missing=0
 for required_path in \
     "sam3_weights/sam3.pt" \
     "sam3_weights/sam3.1_multiplex.pt" \
-    "models/Qwen3-VL-2B-Instruct" \
-    "models/realesrgan/RealESRGAN_x2plus.pth"; do
+    "models/realesrgan/RealESRGAN_x2plus.pth" \
+    "models/clip/ViT-L-14.pt"; do
     if [[ ! -e "$required_path" ]]; then
         echo "Missing model asset: $required_path"
         missing=1
     fi
 done
+if [[ "$VLM_BACKEND" == "local" ]]; then
+    for required_path in \
+        "models/Qwen3-VL-2B-Instruct/model.safetensors" \
+        "models/Qwen3-VL-2B-Instruct/config.json"; do
+        if [[ ! -e "$required_path" ]]; then
+            echo "Missing model asset: $required_path"
+            missing=1
+        fi
+    done
+fi
 if [[ ! -d "RoboCOIN_datasets" ]]; then
     echo "No dataset directory yet: RoboCOIN_datasets"
     echo "Run: $VENV_PYTHON download_head_videos.py --limit 10"
@@ -132,4 +165,5 @@ echo "Activate with: source .venv/bin/activate"
 echo "Start viewer:  python viewer.py"
 if [[ "$missing" -eq 1 ]]; then
     echo "Copy/download the model assets listed above before running the full pipeline."
+    exit 1
 fi

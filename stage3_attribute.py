@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Annotate the latest tracked objects with Qwen3-VL using the best-quality view."""
+"""Annotate the latest tracked objects with a VLM using the best-quality view.
+
+Inference is pluggable: ``--vlm-backend local`` (default) uses a local
+Qwen3-VL model; ``--vlm-backend api`` talks to an OpenAI-compatible
+vision-language endpoint (``VLM_API_BASE``/``VLM_API_KEY``/``VLM_MODEL``, for
+example ``glm5.3flash``).  All WordNet/ontology decisions stay local in both
+modes, and the ``attributes.jsonl`` cache behaves identically.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +26,7 @@ from tqdm import tqdm
 
 from hardware_profiles import PROFILES, default_profile_name, get_profile
 from project_paths import portable_path, resolve_project_path
+from vlm_backend import DEFAULT_MODEL as DEFAULT_API_VLM_MODEL, openai_backend_from_env
 
 BASE_DIR = Path(__file__).resolve().parent
 TRACKS_DIR = BASE_DIR / "objects" / "tracks"
@@ -41,6 +49,20 @@ WORDNET_CONCRETE_ROOT = WORDNET_PHYSICAL_ROOT
 WORDNET_MAX_DEPTH = 24
 WORDNET_MAX_CANDIDATE_PATHS = 24
 WORDNET_EXPANDED_CANDIDATE_PATHS = 64
+
+# Active network VLM backend.  When set (api mode), every *_generate_json /
+# *_generate_raw_batch call below is delegated to this backend instead of the
+# local Qwen3-VL model; the local leaf functions remain the default path.
+_VLM_API_BACKEND = None
+
+
+def set_vlm_api_backend(backend) -> None:
+    global _VLM_API_BACKEND
+    _VLM_API_BACKEND = backend
+
+
+def _api_backend():
+    return _VLM_API_BACKEND
 
 PROMPT = """The first image shows one tracked physical object isolated on black. The second image, when present, shows the same target highlighted in its original scene. Use the scene only to understand identity, attachment, and function; identify the highlighted target rather than nearby background objects. Produce a short common English object name for navigating controlled taxonomies. This hint is not the final category. Output ONLY:
 {
@@ -163,8 +185,18 @@ def find_instances(backend: str) -> list[dict]:
     return instances
 
 
-def _fingerprint(instance: dict) -> str:
+def vlm_cache_identity(vlm_backend: str) -> str:
+    """Return the inference identity that owns an attribute-cache entry."""
+    if vlm_backend == "api":
+        api_base = os.environ.get("VLM_API_BASE", "").strip().rstrip("/")
+        model = os.environ.get("VLM_MODEL", DEFAULT_API_VLM_MODEL).strip()
+        return f"api:{api_base}:{model or DEFAULT_API_VLM_MODEL}"
+    return f"local:{QWEN_MODEL_ID}"
+
+
+def _fingerprint(instance: dict, vlm_identity: str) -> str:
     digest = hashlib.sha256(PROMPT_VERSION.encode())
+    digest.update(vlm_identity.encode())
     digest.update(ONTOLOGY_PATH.read_bytes())
     digest.update(resolve_project_path(instance["best_quality_path"]).read_bytes())
     digest.update(str(instance.get("mask_prompt", "object")).encode())
@@ -190,6 +222,9 @@ def _extract_json(text: str) -> dict:
 def _generate_json(images: Image.Image | list[Image.Image], prompt: str,
                    model, processor, device: str,
                    max_new_tokens: int) -> tuple[dict, str]:
+    backend = _api_backend()
+    if backend is not None:
+        return backend.generate_json(images, prompt, max_new_tokens=max_new_tokens)
     image_list = images if isinstance(images, list) else [images]
     messages = [{
         "role": "user",
@@ -221,6 +256,11 @@ def _generate_raw_batch(
     max_new_tokens: int,
 ) -> list[str]:
     """Generate one response per object while preserving every image's pixels."""
+    backend = _api_backend()
+    if backend is not None:
+        return backend.generate_raw_batch(
+            image_groups, prompt, max_new_tokens=max_new_tokens
+        )
     texts = []
     flat_images = []
     prompts = [prompt] * len(image_groups) if isinstance(prompt, str) else prompt
@@ -1428,6 +1468,13 @@ def main():
     parser.add_argument(
         "--hardware-profile", choices=tuple(PROFILES), default=default_profile_name()
     )
+    parser.add_argument(
+        "--vlm-backend",
+        choices=("local", "api"),
+        default=os.environ.get("ROBOCOIN_VLM_BACKEND", "local"),
+        help="local = Qwen3-VL on this machine; api = OpenAI-compatible VLM "
+             "(VLM_API_BASE/VLM_API_KEY/VLM_MODEL)",
+    )
     parser.add_argument("--batch-size", type=int, default=None)
     args = parser.parse_args()
     profile = get_profile(args.hardware_profile)
@@ -1442,9 +1489,12 @@ def main():
     if args.limit:
         instances = instances[:args.limit]
     cache = _load_cache()
+    vlm_identity = vlm_cache_identity(args.vlm_backend)
     pending = []
     for instance in instances:
-        instance["fingerprint"] = _fingerprint(instance)
+        instance["fingerprint"] = _fingerprint(instance, vlm_identity)
+        instance["vlm_backend"] = args.vlm_backend
+        instance["vlm_identity"] = vlm_identity
         old = cache.get(instance["instance_id"])
         if (
             args.force
@@ -1463,7 +1513,7 @@ def main():
         f"pending: {len(pending)}",
         flush=True,
     )
-    print(f"Hardware profile: {profile.name}; Qwen batch size: {args.batch_size}")
+    print(f"Hardware profile: {profile.name}; VLM backend: {args.vlm_backend}")
     emit_progress(
         0,
         f"属性标注准备完成：缓存 {len(instances) - len(pending)}，待处理 {len(pending)}",
@@ -1477,14 +1527,22 @@ def main():
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     emit_progress(1, "正在加载 WordNet 和属性词库")
     _wordnet()
-    emit_progress(2, "正在加载 Qwen3-VL 属性标注模型")
-    model, processor, device = load_qwen()
+    if args.vlm_backend == "api":
+        backend = openai_backend_from_env()
+        set_vlm_api_backend(backend)
+        model = processor = None
+        device = "api"
+        backend_label = f"VLM API（{backend.model}）"
+    else:
+        emit_progress(2, "正在加载本地 Qwen3-VL 属性标注模型")
+        model, processor, device = load_qwen()
+        backend_label = "Qwen3-VL"
     emit_progress(
         5,
-        f"Qwen3-VL 已加载，按批次 {args.batch_size} 标注 {len(pending)} 个物体",
+        f"{backend_label} 已就绪，按批次 {args.batch_size} 标注 {len(pending)} 个物体",
     )
     started = time.time()
-    progress = tqdm(total=len(pending), desc="Qwen3-VL attributes")
+    progress = tqdm(total=len(pending), desc=f"VLM attributes ({args.vlm_backend})")
     for batch_start in range(0, len(pending), args.batch_size):
         batch = pending[batch_start:batch_start + args.batch_size]
         try:

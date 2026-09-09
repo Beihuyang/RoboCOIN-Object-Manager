@@ -7,6 +7,20 @@ def test_object_prompt_leaves_vlm_identification_unconstrained():
     assert stage3._apply_known_mask_label(answer, {}) == answer
 
 
+def test_vlm_cache_fingerprint_changes_with_api_model(tmp_path, monkeypatch):
+    ontology = tmp_path / "ontology.json"
+    image = tmp_path / "best.jpg"
+    ontology.write_text("{}")
+    image.write_bytes(b"image")
+    monkeypatch.setattr(stage3, "ONTOLOGY_PATH", ontology)
+    instance = {"best_quality_path": str(image), "mask_prompt": "object"}
+
+    first = stage3._fingerprint(instance, "api:https://example/v4:glm-a")
+    second = stage3._fingerprint(instance, "api:https://example/v4:glm-b")
+
+    assert first != second
+
+
 def test_named_prompt_supplies_identity_color_and_size():
     known = stage3._known_mask_label("small red cup")
 

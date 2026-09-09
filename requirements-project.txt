@@ -21,3 +21,8 @@ realesrgan==0.3.0
 
 # Install OpenAI CLIP separately because it is sourced from GitHub:
 # python -m pip install git+https://github.com/openai/CLIP.git
+
+# transformers / qwen-vl-utils are only required by stage3_attribute.py with
+# --vlm-backend local (Qwen3-VL on this machine). --vlm-backend api talks to an
+# OpenAI-compatible VLM endpoint through vlm_backend.py using only the Python
+# standard library, so these can be omitted for API-only attribute annotation.

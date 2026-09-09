@@ -35,19 +35,26 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from dedup_tree import (
-    backfill_layout_instance_fingerprints,
-    generate_layout as generate_dedup_tree_layout,
-    inherit_unchanged_adjustments,
-    load_layout as load_dedup_tree_layout,
-    move_instance as move_dedup_tree_instance,
-    rebuild_library as rebuild_library_from_tree,
-    save_layout as save_dedup_tree_layout,
-    trash_instance as trash_dedup_tree_instance,
-    TREE_PATH as DEDUP_TREE_PATH,
-)
+OFFLINE_REVIEW = os.environ.get("ROBOCOIN_OFFLINE_REVIEW", "0").lower() in {
+    "1", "true", "yes", "on",
+}
+if not OFFLINE_REVIEW:
+    from dedup_tree import (
+        backfill_layout_instance_fingerprints,
+        generate_layout as generate_dedup_tree_layout,
+        inherit_unchanged_adjustments,
+        load_layout as load_dedup_tree_layout,
+        move_instance as move_dedup_tree_instance,
+        rebuild_library as rebuild_library_from_tree,
+        save_layout as save_dedup_tree_layout,
+        trash_instance as trash_dedup_tree_instance,
+        TREE_PATH as DEDUP_TREE_PATH,
+    )
+else:
+    DEDUP_TREE_PATH = Path("disabled-in-offline-review-mode")
 from project_paths import portable_path, resolve_project_path
 from semantic_prompts import PROMPT_STRATEGY
+from noun_translations import prompt_zh
 
 BASE_DIR = Path(__file__).resolve().parent
 LIBRARY_INDEX = BASE_DIR / "objects" / "new_library" / "index.json"
@@ -161,6 +168,7 @@ def _unload_resident_sam3() -> bool:
 
 def _run_resident_refine_job(
     job_id: str,
+    directory: Path,
     video_path: Path,
     semantic_prompt: str,
     frame_id: str | None,
@@ -201,6 +209,7 @@ def _run_resident_refine_job(
                     semantic_prompt=semantic_prompt,
                     progress_callback=report_progress,
                     discovery_frame_id_filter=frame_id,
+                    directory_override=directory,
                 )
             _append_job_log(job, f"SAM3 refined {refined} manual box(es).")
             _append_job_log(job, PROGRESS_PREFIX + json.dumps({
@@ -513,9 +522,9 @@ def _resolve_review_session(key: str) -> Path:
         directory = (TRACKS_DIR / key).resolve()
         directory.relative_to(TRACKS_DIR.resolve())
     except (ValueError, OSError):
-        raise HTTPException(status_code=400, detail="Invalid review session")
+        raise HTTPException(status_code=400, detail="审核数据路径无效")
     if directory.name != "initial_sam3_sr_2k" or not (directory / "manifest.json").is_file():
-        raise HTTPException(status_code=404, detail="Review session not found")
+        raise HTTPException(status_code=404, detail="找不到该审核数据")
     return directory
 
 
@@ -561,7 +570,7 @@ def _item_frame_id(item: dict, manifest: dict) -> str:
 def _mask_bbox(mask: np.ndarray) -> list[int]:
     ys, xs = np.where(mask)
     if not len(xs):
-        raise HTTPException(status_code=400, detail="Empty masks cannot be saved")
+        raise HTTPException(status_code=400, detail="空掩码不能保存")
     return [int(xs.min()), int(ys.min()), int(xs.max() + 1), int(ys.max() + 1)]
 
 
@@ -679,20 +688,20 @@ def _review_payload(key: str, directory: Path, frame_id: str | None = None) -> d
     manifest, state = _load_review_state(directory)
     frames = _manifest_review_frames(manifest)
     if not frames:
-        raise HTTPException(status_code=500, detail="Manifest has no discovery frame")
+        raise HTTPException(status_code=500, detail="审核记录中没有发现关键帧")
     frames_by_id = {item["frame_id"]: item for item in frames}
     requested_frame_id = str(
         frame_id or manifest.get("active_discovery_frame_id") or frames[0]["frame_id"]
     )
     if requested_frame_id not in frames_by_id:
-        raise HTTPException(status_code=404, detail="Discovery frame not found")
+        raise HTTPException(status_code=404, detail="找不到发现关键帧")
     active_frame = frames_by_id[requested_frame_id]
     try:
         frame_path = resolve_project_path(active_frame["frame"])
         frame_relative = frame_path.relative_to(TRACKS_DIR.resolve()).as_posix()
         frame_url = f"/tracks/{frame_relative}?v={frame_path.stat().st_mtime_ns}"
     except (KeyError, ValueError, OSError):
-        raise HTTPException(status_code=500, detail="Discovery frame is outside tracks directory")
+        raise HTTPException(status_code=500, detail="发现关键帧不在跟踪数据目录内")
     objects = []
     for item, mask in state:
         if _item_frame_id(item, manifest) != requested_frame_id:
@@ -705,6 +714,17 @@ def _review_payload(key: str, directory: Path, frame_id: str | None = None) -> d
             "bbox": _mask_bbox(mask),
             "score": float(item.get("score", 1.0)),
             "source": item.get("source", "sam3"),
+            "prompt": str(item.get("prompt", "object")),
+            "prompt_zh": prompt_zh(item.get("prompt", "object")),
+            "matched_prompts": [
+                {
+                    "prompt": str(match.get("prompt", "object")),
+                    "prompt_zh": prompt_zh(match.get("prompt", "object")),
+                    "score": float(match.get("score", 0.0)),
+                }
+                for match in item.get("matched_prompts", [])
+                if isinstance(match, dict)
+            ],
             "prompt_points": [
                 [float(point[0]), float(point[1])]
                 for point in item.get("prompt_points", [])
@@ -717,6 +737,14 @@ def _review_payload(key: str, directory: Path, frame_id: str | None = None) -> d
             ],
         }
         objects.append(payload)
+    extracted_prompts = []
+    seen_prompts = set()
+    for value in manifest.get("prompts", []):
+        prompt = str(value).strip()
+        if not prompt or prompt.lower() == "object" or prompt.lower() in seen_prompts:
+            continue
+        seen_prompts.add(prompt.lower())
+        extracted_prompts.append({"prompt": prompt, "prompt_zh": prompt_zh(prompt)})
     video_path, _ = _session_video_and_fps(directory)
     return {
         "key": key,
@@ -731,6 +759,7 @@ def _review_payload(key: str, directory: Path, frame_id: str | None = None) -> d
             ),
         } for item in frames],
         "objects": objects,
+        "extracted_prompts": extracted_prompts,
         "total_object_count": len(state),
         "revision": int(manifest.get("revision", 0)),
         "tracker_dirty": bool(manifest.get("tracker_dirty", False)),
@@ -754,9 +783,9 @@ def _session_video_and_fps(directory: Path) -> tuple[Path, float]:
         video_path = resolve_project_path(metadata["source"])
         sample_fps = float(metadata.get("sample_fps", 1.0))
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=500, detail=f"Invalid frame extraction metadata: {exc}")
+        raise HTTPException(status_code=500, detail=f"关键帧提取信息无效：{exc}")
     if not video_path.is_file() or sample_fps <= 0:
-        raise HTTPException(status_code=500, detail="Source video or sample FPS is invalid")
+        raise HTTPException(status_code=500, detail="源视频或采样帧率无效")
     return video_path, sample_fps
 
 
@@ -786,6 +815,18 @@ def load_library():
         raise HTTPException(status_code=409, detail="物体库已过期，请补全属性并重新生成类别树")
     with open(LIBRARY_INDEX) as f:
         return json.load(f)
+
+
+def _chinese_attributes(item: dict) -> dict:
+    """Return Chinese-only attribute values for pages used by annotators."""
+    translated = item.get("attributes_zh", {}) if isinstance(item, dict) else {}
+    result = {}
+    for key in ("category", "color", "size", "material", "shape", "texture"):
+        value = str(translated.get(key, "")).strip()
+        if not value:
+            value = "待核对"
+        result[key] = value
+    return result
 
 
 def _write_json_atomic(path: Path, data) -> None:
@@ -871,7 +912,7 @@ def _track_image_url(path_text: str) -> str:
 @app.get("/dedup", response_class=HTMLResponse)
 def dedup_page():
     if not DEDUP_TEMPLATE.is_file():
-        return HTMLResponse("<h1>Dedup template not found</h1>", status_code=500)
+        return HTMLResponse("<h1>找不到去重审核页面模板</h1>", status_code=500)
     return HTMLResponse(DEDUP_TEMPLATE.read_text())
 
 
@@ -1459,14 +1500,20 @@ def update_library_attributes(obj_id: str, request: AttributeUpdate):
 @app.get("/review", response_class=HTMLResponse)
 def review_page():
     if not REVIEW_TEMPLATE.is_file():
-        return HTMLResponse("<h1>Review template not found</h1>", status_code=500)
-    return HTMLResponse(REVIEW_TEMPLATE.read_text())
+        return HTMLResponse("<h1>找不到掩码审核页面模板</h1>", status_code=500)
+    page = REVIEW_TEMPLATE.read_text()
+    if OFFLINE_REVIEW:
+        page = page.replace(
+            "</head>",
+            "<style>#trackBtn,#trackAllBtn{display:none!important}</style></head>",
+        )
+    return HTMLResponse(page)
 
 
 @app.get("/object-links", response_class=HTMLResponse)
 def object_links_page():
     if not OBJECT_LINK_TEMPLATE.is_file():
-        return HTMLResponse("<h1>Object-link template not found</h1>", status_code=500)
+        return HTMLResponse("<h1>找不到名词编号审核页面模板</h1>", status_code=500)
     return HTMLResponse(OBJECT_LINK_TEMPLATE.read_text())
 
 
@@ -1581,14 +1628,14 @@ def object_link_items(
             item = library.get(object_id)
             if item is None:
                 continue
-            attributes = item.get("attributes", {})
+            attributes = _chinese_attributes(item)
             canonical = str(item.get("canonical_path", ""))
             candidates.append({
                 "id": object_id,
-                "category": attributes.get("category", "unknown"),
-                "color": attributes.get("color", "unknown"),
-                "size": attributes.get("size", "unknown"),
-                "material": attributes.get("material", "unknown"),
+                "category": attributes.get("category", "待核对"),
+                "color": attributes.get("color", "待核对"),
+                "size": attributes.get("size", "待核对"),
+                "material": attributes.get("material", "待核对"),
                 "image_url": "/library/" + canonical.replace(
                     "objects/new_library/", "", 1
                 ),
@@ -1618,6 +1665,7 @@ def object_link_library_search(
     results = []
     for object_id, item in library.items():
         attributes = item.get("attributes", {})
+        attributes_zh = _chinese_attributes(item)
         haystack = " ".join([
             object_id,
             str(attributes.get("category", "")),
@@ -1625,16 +1673,17 @@ def object_link_library_search(
             str(attributes.get("size", "")),
             str(attributes.get("material", "")),
             str(attributes.get("shape", "")),
+            *map(str, attributes_zh.values()),
         ]).lower()
         if query not in haystack:
             continue
         canonical = str(item.get("canonical_path", ""))
         results.append({
             "id": object_id,
-            "category": attributes.get("category", "unknown"),
-            "color": attributes.get("color", "unknown"),
-            "size": attributes.get("size", "unknown"),
-            "material": attributes.get("material", "unknown"),
+            "category": attributes_zh.get("category", "待核对"),
+            "color": attributes_zh.get("color", "待核对"),
+            "size": attributes_zh.get("size", "待核对"),
+            "material": attributes_zh.get("material", "待核对"),
             "image_url": "/library/" + canonical.replace(
                 "objects/new_library/", "", 1
             ),
@@ -1793,7 +1842,7 @@ def review_action(request: ReviewAction):
                 raise HTTPException(status_code=400, detail="请先选择要删除的物体")
             missing = [value for value in requested_ids if value not in by_id]
             if missing:
-                raise HTTPException(status_code=404, detail=f"Object IDs not found: {missing}")
+                raise HTTPException(status_code=404, detail=f"找不到这些物体编号：{missing}")
             selected = set(requested_ids)
             new_state = [pair for pair in state if int(pair[0]["object_id"]) not in selected]
 
@@ -1802,7 +1851,7 @@ def review_action(request: ReviewAction):
                 raise HTTPException(status_code=400, detail="合并至少需要选择两个物体")
             missing = [value for value in requested_ids if value not in by_id]
             if missing:
-                raise HTTPException(status_code=404, detail=f"Object IDs not found: {missing}")
+                raise HTTPException(status_code=404, detail=f"找不到这些物体编号：{missing}")
             selected = set(requested_ids)
             selected_pairs = [
                 pair for pair in state if int(pair[0]["object_id"]) in selected
@@ -1922,6 +1971,8 @@ def review_action(request: ReviewAction):
 
 @app.post("/api/review/job")
 def start_review_job(request: ReviewJobRequest):
+    if OFFLINE_REVIEW and request.kind == "track":
+        raise HTTPException(status_code=403, detail="离线审核包不包含视频跟踪功能")
     directory = _resolve_review_session(request.session)
     manifest, state = _load_review_state(directory)
     if request.kind == "refine" and not any(
@@ -1971,6 +2022,7 @@ def start_review_job(request: ReviewJobRequest):
                 target = _run_resident_refine_job
                 thread_args = (
                     job_id,
+                    directory,
                     video_path,
                     str(manifest.get("prompt") or "object"),
                     request.frame_id,
@@ -2075,6 +2127,8 @@ def cancel_review_job(job_id: str):
 
 @app.post("/api/review/job/all")
 def start_all_tracking_job(request: ReviewBatchTrackRequest):
+    if OFFLINE_REVIEW:
+        raise HTTPException(status_code=403, detail="离线审核包不包含批量跟踪功能")
     """Track only review manifests changed since their last successful track."""
     quality_weights = {
         "sharpness": request.quality_sharpness,
@@ -2152,15 +2206,12 @@ def index(
     objects = list(lib.values())
 
     # Extract for filters
-    all_categories = sorted(set(
-        o["attributes"].get("category", "?") for o in objects
-    ))
-    all_colors = sorted(set(
-        o["attributes"].get("color", "?") for o in objects
-    ))
-    all_materials = sorted(set(
-        o["attributes"].get("material", "?") for o in objects
-    ))
+    all_categories = sorted(set(o["attributes"].get("category", "?") for o in objects))
+    all_colors = sorted(set(o["attributes"].get("color", "?") for o in objects))
+    all_materials = sorted(set(o["attributes"].get("material", "?") for o in objects))
+    category_labels = {o["attributes"].get("category", "?"): _chinese_attributes(o)["category"] for o in objects}
+    color_labels = {o["attributes"].get("color", "?"): _chinese_attributes(o)["color"] for o in objects}
+    material_labels = {o["attributes"].get("material", "?"): _chinese_attributes(o)["material"] for o in objects}
 
     # Apply filters
     if category:
@@ -2178,26 +2229,29 @@ def index(
     elif sort == "color":
         objects.sort(key=lambda o: o["attributes"].get("color", ""))
 
-    filters_html = _build_filters(all_categories, all_colors, all_materials,
-                                  category, color, material, sort)
+    filters_html = _build_filters(
+        all_categories, all_colors, all_materials, category, color, material,
+        sort, category_labels, color_labels, material_labels,
+    )
 
     cards = ""
     for obj in objects:
         canonical = obj["canonical_path"]
         canonical_url = "/library/" + canonical.replace("objects/new_library/", "", 1)
-        attr = obj["attributes"]
+        attr = _chinese_attributes(obj)
+        display_name = str(obj.get("display_name_zh") or obj.get("name") or "待核对物体")
         cards += f"""
         <a href="/new-object/{obj['id']}" class="card">
             <img src="{canonical_url}" loading="lazy">
             <div class="card-info">
-                <div class="name">{html_lib.escape(str(obj.get('name', attr.get('category', '?'))))}</div>
+                <div class="name">{html_lib.escape(display_name)}</div>
                 <div class="sub">{attr.get('color', '?')} · {attr.get('size', '?')} · {attr.get('material', '?')}</div>
-                <div class="count">{obj['instance_count']} instances</div>
+                <div class="count">{obj['instance_count']} 个实例</div>
             </div>
         </a>"""
 
     return HTML_TEMPLATE.format(
-        title=f"New Object Library ({len(objects)} objects)",
+        title=f"物体库（{len(objects)} 个物体）",
         filters=filters_html,
         content=cards,
         count=len(objects),
@@ -2209,9 +2263,9 @@ def object_detail(obj_id: str):
     lib = load_library()
     obj = lib.get(obj_id)
     if not obj:
-        return HTMLResponse(f"<h1>Object {obj_id} not found</h1>", status_code=404)
+        return HTMLResponse(f"<h1>找不到物体 {html_lib.escape(obj_id)}</h1>", status_code=404)
 
-    attr = obj["attributes"]
+    attr = _chinese_attributes(obj)
     canonical = obj["canonical_path"]
     canonical_url = "/library/" + canonical.replace("objects/new_library/", "", 1)
 
@@ -2226,7 +2280,7 @@ def object_detail(obj_id: str):
         if not inst:
             continue
         inst_path = inst.replace("objects/new_library/", "", 1)
-        session = html_lib.escape(str(source.get("session_key", "unknown")))
+        session = html_lib.escape(str(source.get("session_key", "来源待核对")))
         object_id = html_lib.escape(str(source.get("object_id", "?")))
         quality = float(source.get("representative_quality_score", 0.0))
         primary = " · 主图" if instance_id == obj.get("canonical_instance_id") else ""
@@ -2237,7 +2291,7 @@ def object_detail(obj_id: str):
         )
 
     def value(key):
-        return html_lib.escape(str(attr.get(key, "unknown")), quote=True)
+        return html_lib.escape(str(attr.get(key, "待核对")), quote=True)
 
     html = f"""
     <div class="detail">
@@ -2248,12 +2302,13 @@ def object_detail(obj_id: str):
                 <h2>{html_lib.escape(str(obj.get('name', obj['id'])))}</h2>
                 <p class="muted">内部 ID：{obj['id']}</p>
                 <table>
-                    <tr><td>Category</td><td><input data-key="category" value="{value('category')}"></td></tr>
-                    <tr><td>Color</td><td><input data-key="color" value="{value('color')}"></td></tr>
-                    <tr><td>Material</td><td><input data-key="material" value="{value('material')}"></td></tr>
-                    <tr><td>Shape</td><td><input data-key="shape" value="{value('shape')}"></td></tr>
-                    <tr><td>Texture</td><td><input data-key="texture" value="{value('texture')}"></td></tr>
-                    <tr><td>Instances</td><td><b>{obj['instance_count']}</b></td></tr>
+                    <tr><td>类别</td><td><input data-key="category" value="{value('category')}"></td></tr>
+                    <tr><td>颜色</td><td><input data-key="color" value="{value('color')}"></td></tr>
+                    <tr><td>尺寸</td><td><input data-key="size" value="{value('size')}"></td></tr>
+                    <tr><td>材质</td><td><input data-key="material" value="{value('material')}"></td></tr>
+                    <tr><td>形状</td><td><input data-key="shape" value="{value('shape')}"></td></tr>
+                    <tr><td>纹理</td><td><input data-key="texture" value="{value('texture')}"></td></tr>
+                    <tr><td>实例数量</td><td><b>{obj['instance_count']}</b></td></tr>
                 </table>
                 <button onclick="saveAttributes()">保存人工修改</button>
                 <span id="saveMessage"></span>
@@ -2264,7 +2319,7 @@ def object_detail(obj_id: str):
                 </div>
             </div>
         </div>
-        <h3>All Instances</h3>
+        <h3>全部实例</h3>
         <div class="instances">{instances_html}</div>
     </div>
     <script>
@@ -2296,31 +2351,32 @@ def object_detail(obj_id: str):
                                 filters="", content=html, count=0)
 
 
-def _build_filters(cats, colors, materials, sel_cat, sel_color, sel_mat, sort):
-    def select_opts(options, selected, name):
+def _build_filters(cats, colors, materials, sel_cat, sel_color, sel_mat, sort,
+                   category_labels, color_labels, material_labels):
+    def select_opts(options, selected, name, empty_label, labels):
         html = f'<select name="{name}" onchange="this.form.submit()">'
-        html += f'<option value="">All {name}s</option>'
+        html += f'<option value="">{empty_label}</option>'
         for o in options:
             sel = "selected" if o == selected else ""
-            html += f'<option value="{o}" {sel}>{o}</option>'
+            html += f'<option value="{html_lib.escape(str(o), quote=True)}" {sel}>{html_lib.escape(str(labels.get(o, "待核对")))}</option>'
         html += '</select>'
         return html
 
     return f"""
     <form class="filters">
-        {select_opts(cats, sel_cat, 'category')}
-        {select_opts(colors, sel_color, 'color')}
-        {select_opts(materials, sel_mat, 'material')}
+        {select_opts(cats, sel_cat, 'category', '全部类别', category_labels)}
+        {select_opts(colors, sel_color, 'color', '全部颜色', color_labels)}
+        {select_opts(materials, sel_mat, 'material', '全部材质', material_labels)}
         <select name="sort" onchange="this.form.submit()">
-            <option value="count" {"selected" if sort=="count" else ""}>Sort: count ↓</option>
-            <option value="category" {"selected" if sort=="category" else ""}>Sort: category</option>
-            <option value="color" {"selected" if sort=="color" else ""}>Sort: color</option>
+            <option value="count" {"selected" if sort=="count" else ""}>按实例数量降序</option>
+            <option value="category" {"selected" if sort=="category" else ""}>按类别排序</option>
+            <option value="color" {"selected" if sort=="color" else ""}>按颜色排序</option>
         </select>
     </form>"""
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -2370,7 +2426,7 @@ h1 {{ margin:0 0 8px; font-size:1.65em; letter-spacing:-.02em; }}
 <body>
 <nav class="top-links"><a href="/review">关键帧审核</a><a href="/dedup">去重审核</a><a href="/object-links">名词 ID 审核</a></nav>
 <h1>{title}</h1>
-<div class="summary">{count} objects</div>
+<div class="summary">共 {count} 个物体</div>
 {filters}
 <div class="grid">{content}</div>
 </body>

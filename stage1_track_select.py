@@ -58,7 +58,7 @@ CAMERA_KEYWORDS = (
     "high", "head", "front", "chest", "center", "ego", "left", "right"
 )
 FIRST_FRAME_EXTRACTION_METHOD = "source_frame_selected_sr_2k_v1"
-DISCOVERY_CACHE_VERSION = 18
+DISCOVERY_CACHE_VERSION = 21
 TRACK_FRAME_EXTRACTION_METHOD = "source_discovery_frames_interval_v3"
 PROGRESS_PREFIX = "@@PROGRESS "
 ROBOT_ARM_PROMPTS = ("robot arm", "robot gripper", "robot hand")
@@ -515,9 +515,7 @@ def _decode_grounding_detections(
     prompt: str,
     threshold: float,
 ) -> list[dict]:
-    """Convert one SAM3 text-grounding result into NMS-filtered masks."""
-    from torchvision.ops import nms
-
+    """Convert one SAM3 text-grounding result without merging its instances."""
     boxes = _as_numpy(output.get("boxes", [])).reshape(-1, 4)
     masks = _as_numpy(output.get("masks", []))
     scores = _as_numpy(output.get("scores", [])).reshape(-1)
@@ -535,14 +533,8 @@ def _decode_grounding_detections(
     if not valid:
         return []
 
-    keep_local = nms(
-        torch.as_tensor(boxes[valid], dtype=torch.float32),
-        torch.as_tensor(scores[valid], dtype=torch.float32),
-        iou_threshold=0.5,
-    ).tolist()
     results = []
-    for local_index in keep_local:
-        index = valid[local_index]
+    for index in valid:
         results.append({
             "bbox": [float(value) for value in boxes[index]],
             "mask": masks[index].astype(bool),
@@ -622,46 +614,41 @@ def _mask_duplicate(a: np.ndarray, b: np.ndarray) -> tuple[bool, float, float]:
 def merge_cross_prompt_detections(
     detections_by_prompt: list[tuple[str, list[dict]]],
 ) -> tuple[list[dict], list[dict]]:
-    """Group overlapping cross-prompt masks and keep the highest-confidence one."""
+    """Merge only direct, cross-prompt matches and keep the best-scoring mask.
+
+    A group may contain at most one detection from each prompt.  This preserves
+    distinct instances returned by one prompt and avoids transitive A-B-C merges
+    swallowing neighbouring objects when A and C do not directly overlap.
+    """
     candidates = [
         dict(detection, prompt=detection.get("prompt", prompt))
         for prompt, detections in detections_by_prompt
         for detection in detections
     ]
-    parent = list(range(len(candidates)))
-
-    def root(index: int) -> int:
-        while parent[index] != index:
-            parent[index] = parent[parent[index]]
-            index = parent[index]
-        return index
-
-    def union(left: int, right: int) -> None:
-        left_root, right_root = root(left), root(right)
-        if left_root != right_root:
-            parent[right_root] = left_root
-
-    for left in range(len(candidates)):
-        for right in range(left + 1, len(candidates)):
-            duplicate, _iou, _containment = _mask_duplicate(
-                candidates[left]["mask"], candidates[right]["mask"]
+    candidates.sort(key=lambda item: float(item["score"]), reverse=True)
+    components: list[list[dict]] = []
+    for candidate in candidates:
+        best_component = None
+        best_similarity = (-1.0, -1.0)
+        for component in components:
+            if any(item["prompt"] == candidate["prompt"] for item in component):
+                continue
+            representative = component[0]
+            duplicate, iou, containment = _mask_duplicate(
+                candidate["mask"], representative["mask"]
             )
-            if duplicate:
-                union(left, right)
-
-    components: dict[int, list[dict]] = {}
-    for index, candidate in enumerate(candidates):
-        components.setdefault(root(index), []).append(candidate)
+            if duplicate and (iou, containment) > best_similarity:
+                best_component = component
+                best_similarity = (iou, containment)
+        if best_component is None:
+            components.append([candidate])
+        else:
+            best_component.append(candidate)
 
     kept: list[dict] = []
     duplicates: list[dict] = []
-    ranked_components = sorted(
-        components.values(),
-        key=lambda component: max(float(item["score"]) for item in component),
-        reverse=True,
-    )
-    for component in ranked_components:
-        representative = max(component, key=lambda item: float(item["score"]))
+    for component in components:
+        representative = component[0]
         item = dict(representative)
         item["matched_prompts"] = [
             {"prompt": candidate["prompt"], "score": float(candidate["score"])}
@@ -735,27 +722,33 @@ def detect_first_frame(
                 original_size=image.size,
                 threshold=threshold,
             ))
+        for noun_prompt in prompts:
+            prompt_detections = _decode_grounding_detections(
+                outputs[noun_prompt], height, width, noun_prompt, threshold
+            )
+            raw_counts[noun_prompt] = len(prompt_detections)
+            detections_by_prompt.append((noun_prompt, prompt_detections))
     else:
         with torch.inference_mode(), torch.autocast(
             "cuda", dtype=torch.bfloat16, cache_enabled=False
         ):
             state = _set_sam3_image(processor, image)
         processor.set_confidence_threshold(max(0.0, threshold - 1e-7))
-        outputs = {}
         for noun_prompt in prompts:
             processor.reset_all_prompts(state)
             with torch.inference_mode(), torch.autocast(
                 "cuda", dtype=torch.bfloat16, cache_enabled=False
             ):
-                outputs[noun_prompt] = processor.set_text_prompt(
+                output = processor.set_text_prompt(
                     state=state, prompt=noun_prompt
                 )
-    for noun_prompt in prompts:
-        prompt_detections = _decode_grounding_detections(
-            outputs[noun_prompt], height, width, noun_prompt, threshold
-        )
-        raw_counts[noun_prompt] = len(prompt_detections)
-        detections_by_prompt.append((noun_prompt, prompt_detections))
+            # Sam3Processor can return its mutable inference state. Decode it
+            # before the next prompt mutates that state in place.
+            prompt_detections = _decode_grounding_detections(
+                output, height, width, noun_prompt, threshold
+            )
+            raw_counts[noun_prompt] = len(prompt_detections)
+            detections_by_prompt.append((noun_prompt, prompt_detections))
     detections, duplicate_matches = merge_cross_prompt_detections(
         detections_by_prompt
     )
@@ -1011,9 +1004,10 @@ def refine_manual_boxes(
     semantic_prompt: str,
     progress_callback: Callable[[int, int], None] | None = None,
     discovery_frame_id_filter: str | None = None,
+    directory_override: Path | None = None,
 ) -> int:
     """Refine manual objects with SAM3's native box-and-point predictor."""
-    directory = initial_mask_dir(video_path)
+    directory = directory_override or initial_mask_dir(video_path)
     manifest_path = directory / "manifest.json"
     if not manifest_path.is_file():
         raise RuntimeError(f"No initial masks for {video_path}; run --stage discover first")
@@ -1214,27 +1208,21 @@ def load_cached_initial_masks(
     try:
         manifest = json.loads(manifest_path.read_text())
         extraction = json.loads((frame_path.parent / "extraction.json").read_text())
-        manual_revision = int(manifest.get("revision", 0)) > 0
         if (
             not same_project_path(manifest.get("frame", ""), frame_path)
             or int(manifest.get("discovery_frame", {}).get("source_frame_index", -1))
             != int(extraction.get("source_frame_index", -2))
+            or manifest.get("frame_extraction_method")
+            != FIRST_FRAME_EXTRACTION_METHOD
+            or manifest.get("discovery_cache_version")
+            != DISCOVERY_CACHE_VERSION
             or (
-                not manual_revision
+                validate_discovery_settings
                 and (
-                    manifest.get("frame_extraction_method")
-                    != FIRST_FRAME_EXTRACTION_METHOD
-                    or manifest.get("discovery_cache_version")
-                    != DISCOVERY_CACHE_VERSION
-                    or (
-                        validate_discovery_settings
-                        and (
-                            manifest.get("prompt") != expected_prompts[0]
-                            or manifest.get("prompts") != expected_prompts
-                            or manifest.get("prompt_strategy") != PROMPT_STRATEGY
-                            or float(manifest.get("threshold")) != threshold
-                        )
-                    )
+                    manifest.get("prompt") != expected_prompts[0]
+                    or manifest.get("prompts") != expected_prompts
+                    or manifest.get("prompt_strategy") != PROMPT_STRATEGY
+                    or float(manifest.get("threshold")) != threshold
                 )
             )
         ):

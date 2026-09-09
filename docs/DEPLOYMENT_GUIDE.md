@@ -16,7 +16,7 @@
 
 当前需要迁移的数据约34 GB，其中模型约13 GB、原始视频约18 GB、人工结果约2.6 GB。迁移前确认目标机器有足够空间。
 
-## 2. 推荐：一条命令部署
+## 2. 推荐：部署数采员独立完整版
 
 两台机器先连接同一个局域网，推荐使用网线。先确认旧机器的页面没有正在运行 SAM3、跟踪、VLM 或 CLIP 任务，同步期间不要继续标注。
 
@@ -33,12 +33,13 @@ hostname -I
 
 ### 旧机器执行一条命令
 
-在项目根目录执行，把用户名和 IP 换成新机器的实际信息：
+在项目根目录先生成最小完整部署目录，再把用户名和 IP 换成新机器的实际信息：
 
 ```bash
 cd /home/hy/baai/RoboCOIN-Object-Manager
-chmod +x deploy_remote.sh
-./deploy_remote.sh username@192.168.1.120
+.venv/bin/python build_collector_package.py
+chmod +x deploy_collector_ssh.sh
+./deploy_collector_ssh.sh username@192.168.1.120
 ```
 
 脚本运行时可能询问新机器的登录密码和 `sudo` 密码，正常输入即可。密码不会被保存。
@@ -46,20 +47,20 @@ chmod +x deploy_remote.sh
 默认部署到新机器用户的：
 
 ```text
-/home/用户名/RoboCOIN-Object-Manager
+/home/用户名/RoboCOIN-Collector
 ```
 
 如果要放到用户主目录下的其他位置，可以传入第二个参数：
 
 ```bash
-./deploy_remote.sh username@192.168.1.120 projects/RoboCOIN-Object-Manager
+./deploy_collector_ssh.sh username@192.168.1.120 projects/RoboCOIN-Collector
 ```
 
 一键脚本会自动：
 
 1. 测试两台机器的 SSH 连接；
 2. 在新机器安装 Python 3.10、FFmpeg、Git 和 rsync；
-3. 同步项目代码、模型、数据集、缓存和所有人工结果；
+3. 同步数采所需的代码、模型、数据集、缓存和当前人工结果；审核历史 `.history/` 与旧跟踪归档 `_tracker_archive/` 不进入部署包；
 4. 不复制旧机器的 `.venv`，而是在新机器重新创建；
 5. 执行路径迁移、CUDA 和模型检查。
 
@@ -67,12 +68,13 @@ chmod +x deploy_remote.sh
 
 ## 3. 部署完成后在新机器独立运行
 
-后续步骤全部在**新机器本机**完成。打开新机器的终端执行：
+部署后，在新机器复制配置模板并由技术人员填写 GLM API 密钥：
 
 ```bash
-cd RoboCOIN-Object-Manager
-source .venv/bin/activate
-python viewer.py
+cd RoboCOIN-Collector
+cp collector.env.example collector.env
+# 编辑 collector.env，填写真实 VLM_API_KEY
+./start_collector.sh
 ```
 
 保持终端运行，在**新机器自己的浏览器**打开：
@@ -81,7 +83,7 @@ python viewer.py
 http://127.0.0.1:8888/review
 ```
 
-至此程序完全依靠新机器运行。旧机器不需要开机，也不需要建立 SSH 端口转发。关闭终端会停止页面；再次使用时重新执行上面的三条命令即可。
+启动脚本会先检查 CUDA、依赖和模型，随后启动页面并自动打开浏览器。至此程序完全依靠新机器运行；旧机器不需要开机或端口转发。关闭启动窗口会停止页面。
 
 ## 4. 必须迁移的内容
 
@@ -91,7 +93,7 @@ http://127.0.0.1:8888/review
 |---|---|
 | `sam3/` | 项目使用并修改过的SAM3代码 |
 | `sam3_weights/` | SAM3与SAM3.1权重 |
-| `models/` | Qwen、CLIP和RealESRGAN权重 |
+| `models/` | CLIP和RealESRGAN权重；GLM通过API调用，不携带Qwen权重 |
 | `RoboCOIN_datasets/` | 原始视频 |
 | `objects/` | 掩码、跟踪结果、属性缓存、人工调整树和物体库 |
 | `reports/` | 效果评估报告和对比图 |
@@ -110,8 +112,8 @@ rsync -a --partial --info=progress2 \
   --exclude='.venv/' \
   --exclude='__pycache__/' \
   --exclude='*.log' \
-  /home/hy/baai/RoboCOIN-Object-Manager/ \
-  username@192.168.1.120:RoboCOIN-Object-Manager/
+  /home/hy/baai/RoboCOIN-Collector/ \
+  username@192.168.1.120:RoboCOIN-Collector/
 ```
 
 ### 5.2 新机器安装系统依赖
@@ -132,7 +134,7 @@ sudo apt install -y python3.10 python3.10-venv ffmpeg git
 进入项目目录：
 
 ```bash
-cd RoboCOIN-Object-Manager
+cd RoboCOIN-Collector
 ```
 
 ### 5.3 创建项目环境
@@ -170,7 +172,7 @@ PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu126 \
 - Python和PyTorch版本；
 - `CUDA: True`；
 - 正确的GPU名称；
-- 没有缺失的SAM3、SAM3.1、Qwen或RealESRGAN文件。
+- 没有缺失的SAM3、SAM3.1、CLIP或RealESRGAN文件。
 
 再检查关键目录：
 
@@ -183,8 +185,7 @@ du -sh sam3_weights models RoboCOIN_datasets objects reports
 首次验证建议在前台启动：
 
 ```bash
-source .venv/bin/activate
-python viewer.py
+./start_collector.sh
 ```
 
 在新机器本地打开：
@@ -240,7 +241,7 @@ ssh username@192.168.1.120
 ### 端口8888被占用
 
 ```bash
-python viewer.py --port 8889
+.venv/bin/python viewer.py --port 8889
 ```
 
 随后在新机器本地浏览器访问 `http://127.0.0.1:8889/review`。
@@ -250,7 +251,7 @@ python viewer.py --port 8889
 把项目目录复制到移动硬盘，再复制到新机器。同样不要复制 `.venv/`。复制完后，在新机器运行：
 
 ```bash
-cd RoboCOIN-Object-Manager
+cd RoboCOIN-Collector
 chmod +x setup.sh
 PYTHON_BIN=python3.10 ./setup.sh
 ./setup.sh --check

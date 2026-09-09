@@ -1,0 +1,21 @@
+.git
+.venv
+.pytest_cache
+**/__pycache__
+**/*.py[cod]
+**/*.log
+
+# Persistent runtime assets are mounted into the container.
+RoboCOIN_datasets
+objects
+models
+sam3_weights
+
+# Large generated evaluation artifacts are not needed at runtime.
+reports/**/comparisons
+*.tar
+*.tar.gz
+
+# Never send local credentials to the Docker build context.
+.env
+ks3util-resource-config

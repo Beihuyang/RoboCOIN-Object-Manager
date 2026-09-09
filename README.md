@@ -18,6 +18,7 @@
 | 属性提取 | `stage3_attribute.py` | 对质量最高图标注类别、颜色、材质、形状、纹理 |
 | 属性与视觉聚簇 | `stage4_dedup.py`、`dedup_tree.py` | 属性树预分组，ViT-L/14 complete-link 聚簇 |
 | 人工审核与物体库浏览 | `viewer.py` | 支持拖拽调整簇、跨节点移动、垃圾桶软删除及属性修改 |
+| 离线人工审核包 | `export_offline_review.py` / `import_offline_review.py` | 导出选中视角视频、关键帧、掩码、中文名词和本地 SAM3 框点细化环境，不携带完整数据集与跟踪模型；数采员回传后由导入工具做带基线校验的增量合并 |
 
 ## 硬件与环境
 
@@ -28,9 +29,7 @@
 
 完整流水线的可运行下限是 NVIDIA CUDA GPU 8 GB 显存、16 GB 内存加交换空间、8 核 CPU 和任务开始前至少 50 GB 可用 SSD 空间；该配置必须串行运行模型任务。推荐 12 GB 及以上显存、32 GB 内存、12 核及以上 CPU 和 100 GB 以上可用 NVMe 空间。项目模型与虚拟环境约占 14 GB，数据、抽帧、2K 图和缓存需另行预留空间。
 
-虚拟环境复用机器上已有的 CUDA 版 PyTorch，避免重复占用数 GB；项目自己的 NumPy 1.26、OpenCV 4.10 和其他包安装在 `.venv` 中。
-
-因为使用了 `--system-site-packages`，`pip check` 会看到宿主环境中 LeRobot、Rerun、`opencv-python-headless` 等包的版本声明冲突；这些包不属于本流水线。下面列出的项目导入、CUDA 模型加载和实图推理均已单独验证。
+新部署使用隔离的 `.venv`，并从指定的 PyTorch CUDA 软件源安装独立运行环境，不再继承宿主 Python 包。`setup.sh --check` 会严格检查 Python 3.10、CUDA、必要依赖和模型文件；任一关键项缺失都会返回失败，避免部署显示成功但模型不能运行。
 
 已下载的公开权重：
 
@@ -77,6 +76,21 @@ deactivate
 ```
 
 ### 换电脑时的一键安装
+
+数采员电脑使用 GLM API 时，推荐先生成精简但功能完整的独立目录，再通过 SSH 部署：
+
+```bash
+.venv/bin/python build_collector_package.py
+./deploy_collector_ssh.sh username@192.168.1.120
+```
+
+生成目录为同级的 `RoboCOIN-Collector/`，包含原始视频、当前审核结果、SAM3/SAM3.1、CLIP、RealESRGAN、GLM API 后端和全部人工页面；不包含 Qwen 本地权重、SAM2、报告实验、服务器/离线回传工具、审核历史目录 `.history/` 和旧跟踪归档 `_tracker_archive/`。历史和归档仍保留在源项目中，只是不传给数采电脑。大文件在本机暂存目录中使用硬链接节省空间，通过 SSH 传到数采电脑后是独立文件。
+
+目标电脑复制 `collector.env.example` 为 `collector.env` 并填写 GLM API 密钥，日常只需运行：
+
+```bash
+./start_collector.sh
+```
 
 如果两台机器在同一局域网，可以在旧机器的项目根目录直接执行：
 
@@ -222,6 +236,8 @@ SHA-256：9999e2341ceef5e136daa386eecb55cb414446a00ac2b55eb2dfd2f7c3cf8c9e
 ## Stage 1：发现、审核、细化、跟踪
 
 Stage 1 默认使用源视频第 0 帧发现物体。若单帧不能覆盖全部物体，可在人工审核页点击“追加关键帧”，拖动时间轴预览并确认；系统会在所选源帧重新运行 SAM3，同时保留此前关键帧及其物体。单帧自动发现使用 `object`，并补充数据集名称、`meta/tasks.jsonl` 和当前 episode 对应 `meta/episodes.jsonl` 的任务名词；不读取场景描述和 subtask。图像由 SAM3 编码一次，每个提示按照官方接口分别检测，最后合并并去除跨提示词重复掩码。Stage 1 强制拆成独立阶段，默认跟踪抽帧率为 1 FPS：
+
+发现缓存即使包含人工审核 `revision`，也必须同时匹配当前缓存版本、提示词列表和提示策略；任一项过期都会重新运行 SAM3 并替换当前候选。旧目录仍会先写入 `.history/` 快照，但人工审核状态不会阻止算法升级后的全量重算。
 
 首帧和人工确认的追加关键帧会由 RealESRGAN_x2plus 按比例增强到最长边 `2048` 像素，作为 SAM3 发现、机械臂检测、人工审核与框/点细化的统一图像。拖拽关键帧时的快速预览仍直接解码原视频，只在点击“确认并追加发现”后生成2K缓存。
 
@@ -524,3 +540,37 @@ python reports/compare_semantic_prompts.py
 - CLIP 相似度不能可靠判断细粒度同款物体，所以只召回候选、不自动合并；
 - VLM 的类别、颜色、材质、形状和纹理均为视觉估计，必须人工复核；
 - 首帧审核窗口尚无自由画笔和掩码拆分。
+
+## VLM 属性标注后端：本地 Qwen3-VL 或 OpenAI 兼容 API
+
+`stage3_attribute.py` 的属性标注推理可切换后端，WordNet 消歧和受控属性树校验始终在本地完成，两种后端写出的 `attributes.jsonl` 结构与缓存逻辑完全一致：
+
+属性缓存指纹包含后端、API 地址和模型名。切换到 GLM API、更换 API 地址或修改 `VLM_MODEL` 后，旧 VLM 属性缓存会自动失效并重新标注，不需要额外使用 `--force`。
+
+- `--vlm-backend local`（默认）：加载本地 `models/Qwen3-VL-2B-Instruct`（需要 `transformers`、`qwen-vl-utils` 与本地权重）。
+- `--vlm-backend api`：调用 OpenAI 兼容的 `/chat/completions` 视觉接口（例如智谱 `glm-5.3-flash`），依赖已内置的 `vlm_backend.py`，无需 `transformers`/本地 Qwen 权重。命令：
+
+```bash
+export VLM_API_BASE=https://open.bigmodel.cn/api/paas/v4  # 必填
+export VLM_API_KEY=<key>                                   # 必填
+export VLM_MODEL=glm-5.3-flash                             # 可选，默认 glm-5.3-flash（注意连字符）
+export ROBOCOIN_VLM_BACKEND=api            # 让 run_vlm_library_pipeline.py / viewer 任务默认走 API
+.venv/bin/python stage3_attribute.py --vlm-backend api
+```
+
+可选环境变量：`VLM_API_TIMEOUT`（秒，默认 60）、`VLM_API_MAX_RETRIES`（默认 4，429/5xx/网络错误重试）、`VLM_API_CONCURRENCY`（批量并发请求数，默认 4）、`VLM_API_IMAGE_MAX_EDGE`（发送图片最长边像素，默认 1536）、`VLM_API_IMAGE_QUALITY`（JPEG 质量，默认 85）、`VLM_API_TEMPERATURE`（默认 0.0）、`VLM_API_REASONING_EFFORT`（`low`/`high`/`max`，默认 `low`，置空则不发送）、`VLM_API_THINKING`（如 `enabled`；`glm-5.3-flash` 只接受 `enabled`，置空则不发送）、`VLM_API_TOKEN_SCALE`（把调用方传的 token 预算乘上该系数再作为 `max_tokens`，默认 3，给强制深度思考模型预留推理 token）。发送前图片会按最长边等比缩小并转 JPEG，以控制带宽与费用；本地后端保持 2K 原图不压缩。
+
+## 审核页中文名词的预翻译
+
+`/review` 里的中文名词默认查 `noun_translations.py` 内置词表；为覆盖新数据集里出现的未知名词，可用轻量文本模型批量预翻译生成 `noun_translations_cache.json`（运行时不再调用 API，离线包同样可用）：
+
+```bash
+export VLM_API_BASE=https://open.bigmodel.cn/api/paas/v4
+export VLM_API_KEY=<key>
+# 默认 glm-4.7-flashx（付费文本模型，实测约 1s/批，已自动关闭思考）；
+# 可选 glm-4.6 / glm-4.5-airx / 免费 glm-4.7-flash：
+#   --model glm-4.7-flashx
+.venv/bin/python precompute_noun_translations.py
+```
+
+脚本默认用 4 个并发批次翻译（`--concurrency` 或环境变量 `VLM_TRANSLATE_CONCURRENCY` 可调），扫描所有 `objects/tracks/**/initial_sam3_sr_2k/manifest.json` 中出现的英文提示词，只翻译内置词表与已有缓存未覆盖的部分，结果按词合并写入缓存；词表（`NOUN_ZH`）仍优先于缓存。`export_offline_review.py` 导出离线包时会自动带上该缓存文件。

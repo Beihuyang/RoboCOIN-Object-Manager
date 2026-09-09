@@ -122,6 +122,47 @@ def test_first_frame_discovery_calls_each_noun_independently(tmp_path, monkeypat
     assert report["enabled"] is False
 
 
+def test_first_frame_decodes_mutable_processor_state_immediately(
+    tmp_path, monkeypatch
+):
+    frame = tmp_path / "frame.jpg"
+    Image.new("RGB", (8, 8)).save(frame)
+
+    class Processor:
+        def __init__(self):
+            self.state = {}
+
+        def set_confidence_threshold(self, _value): pass
+        def reset_all_prompts(self, _state): self.state.clear()
+
+        def set_text_prompt(self, state, prompt):
+            if prompt == "cup":
+                mask = np.zeros((1, 8, 8), dtype=bool)
+                mask[0, 1:4, 1:4] = True
+                values = (np.array([[1, 1, 4, 4]]), mask, np.array([0.9]))
+            else:
+                values = (
+                    np.empty((0, 4)), np.empty((0, 8, 8), dtype=bool),
+                    np.empty((0,)),
+                )
+            self.state.update(boxes=values[0], masks=values[1], scores=values[2])
+            return self.state
+
+    processor = Processor()
+    monkeypatch.setattr(stage1, "_set_sam3_image", lambda *_args: processor.state)
+    monkeypatch.setattr(stage1.torch, "inference_mode", lambda: nullcontext())
+    monkeypatch.setattr(stage1.torch, "autocast", lambda *_args, **_kwargs: nullcontext())
+
+    detections, report = stage1.detect_first_frame(
+        frame, object(), processor, ["cup", "missing"], 0.2,
+        exclude_robot_arms=False,
+    )
+
+    assert len(detections) == 1
+    assert detections[0]["prompt"] == "cup"
+    assert report["semantic_discovery"]["raw_counts"] == {"cup": 1, "missing": 0}
+
+
 def test_cross_prompt_merge_keeps_highest_confidence_mask():
     low = np.zeros((8, 8), dtype=bool)
     low[2:6, 2:6] = True
@@ -134,6 +175,59 @@ def test_cross_prompt_merge_keeps_highest_confidence_mask():
     assert len(detections) == 1
     assert detections[0]["prompt"] == "cup"
     assert detections[0]["score"] == 0.83
+    assert len(duplicates) == 1
+
+
+def test_cross_prompt_merge_preserves_same_prompt_instances():
+    left = np.zeros((8, 8), dtype=bool)
+    left[1:5, 1:5] = True
+    right = np.zeros((8, 8), dtype=bool)
+    right[2:6, 2:6] = True
+
+    detections, duplicates = stage1.merge_cross_prompt_detections([
+        ("object", [
+            {"mask": left, "score": 0.9, "prompt": "object"},
+            {"mask": right, "score": 0.8, "prompt": "object"},
+        ]),
+    ])
+
+    assert len(detections) == 2
+    assert duplicates == []
+
+
+def test_decode_preserves_overlapping_instances_from_one_prompt():
+    first = np.zeros((8, 8), dtype=bool)
+    first[1:6, 1:6] = True
+    second = np.zeros((8, 8), dtype=bool)
+    second[2:7, 2:7] = True
+    output = {
+        "boxes": np.array([[1, 1, 6, 6], [2, 2, 7, 7]]),
+        "masks": np.stack([first, second]),
+        "scores": np.array([0.9, 0.8]),
+    }
+
+    detections = stage1._decode_grounding_detections(
+        output, 8, 8, "object", 0.2
+    )
+
+    assert len(detections) == 2
+
+
+def test_cross_prompt_merge_does_not_chain_between_neighbours():
+    left = np.zeros((6, 16), dtype=bool)
+    left[1:5, 0:10] = True
+    bridge = np.zeros((6, 16), dtype=bool)
+    bridge[1:5, 2:12] = True
+    right = np.zeros((6, 16), dtype=bool)
+    right[1:5, 4:14] = True
+
+    detections, duplicates = stage1.merge_cross_prompt_detections([
+        ("object", [{"mask": left, "score": 0.9, "prompt": "object"}]),
+        ("cup", [{"mask": bridge, "score": 0.8, "prompt": "cup"}]),
+        ("mug", [{"mask": right, "score": 0.7, "prompt": "mug"}]),
+    ])
+
+    assert len(detections) == 2
     assert len(duplicates) == 1
 
 
