@@ -1,7 +1,6 @@
 # RoboCOIN Object Manager
 
-使用 A800 job 只执行模型推理时，参见 [SERVER_MODE.md](SERVER_MODE.md)。服务器
-入口不会运行图像补全，并使用单卡 80GB 高显存配置。
+当前不使用训练或推理服务器。代码开发、SAM3/SAM3.1、CLIP、RealESRGAN、人工审核和物体库构建均在本机或数采员电脑本地运行；VLM 使用 GLM 视觉 API，因此无需下载或部署本地 VLM 权重。SSH 只用于把最小完整程序部署到数采员电脑，部署完成后该电脑可独立运行。
 
 从 RoboCOIN 视频构建物体库的实验性流水线。项目目标是：默认在视频首帧检测物体，必要时由人工追加多张关键帧补充后续出现的物体，随后跟踪这些物体、选择代表帧、提取属性、生成去重候选，并通过人工界面审核结果。
 
@@ -18,7 +17,7 @@
 | 属性提取 | `stage3_attribute.py` | 对质量最高图标注类别、颜色、材质、形状、纹理 |
 | 属性与视觉聚簇 | `stage4_dedup.py`、`dedup_tree.py` | 属性树预分组，ViT-L/14 complete-link 聚簇 |
 | 人工审核与物体库浏览 | `viewer.py` | 支持拖拽调整簇、跨节点移动、垃圾桶软删除及属性修改 |
-| 离线人工审核包 | `export_offline_review.py` / `import_offline_review.py` | 导出选中视角视频、关键帧、掩码、中文名词和本地 SAM3 框点细化环境，不携带完整数据集与跟踪模型；数采员回传后由导入工具做带基线校验的增量合并 |
+| 数采员独立部署 | `build_collector_package.py`、`deploy_collector_ssh.sh` | 生成 `RoboCOIN-Collector` 最小完整程序并通过 SSH 部署；目标电脑独立运行全部审核与推理流程 |
 
 ## 硬件与环境
 
@@ -31,14 +30,12 @@
 
 新部署使用隔离的 `.venv`，并从指定的 PyTorch CUDA 软件源安装独立运行环境，不再继承宿主 Python 包。`setup.sh --check` 会严格检查 Python 3.10、CUDA、必要依赖和模型文件；任一关键项缺失都会返回失败，避免部署显示成功但模型不能运行。
 
-已下载的公开权重：
+当前本地运行需要的主要公开权重：
 
 ```text
 models/
-├── Qwen3-VL-2B-Instruct/      # 约 4.0 GiB
 ├── realesrgan/
 │   └── RealESRGAN_x2plus.pth # SAM3 前置 2K 超分权重，约 64 MiB
-├── sam2-hiera-large/          # 约 898 MB
 └── clip/ViT-B-16.pt           # 约 335 MiB
 sam3_weights/
 ├── sam3.pt                    # SAM 3：首帧发现和人工框细化
@@ -92,16 +89,7 @@ deactivate
 ./start_collector.sh
 ```
 
-如果两台机器在同一局域网，可以在旧机器的项目根目录直接执行：
-
-```bash
-chmod +x deploy_remote.sh
-./deploy_remote.sh username@192.168.1.120
-```
-
-`deploy_remote.sh` 通过 SSH 和 rsync 同步代码、模型、数据、缓存和人工结果，然后在新机器调用 `setup.sh` 创建环境并检查部署。新机器需要先开启 SSH，完整说明见 [快速部署指南](docs/DEPLOYMENT_GUIDE.md)。
-
-SSH 只用于首次传输和安装。部署结束后，在新机器本机运行 `python viewer.py`，并用新机器自己的浏览器访问 `http://127.0.0.1:8888/review`；旧机器无需继续开机、连接或访问新机器。
+SSH 只用于首次传输和安装。部署结束后，在新机器本机运行 `./start_collector.sh`，并用新机器自己的浏览器访问 `http://127.0.0.1:8888/review`；旧机器无需继续开机、连接或访问新机器。
 
 如果项目已经通过移动硬盘或其他方式复制到新机器，只需在项目根目录运行：
 
@@ -158,7 +146,7 @@ python -m nltk.downloader wordnet
 
 如果换到没有预装 PyTorch 的机器，需要先按对应 CUDA 版本安装 PyTorch 和 TorchVision。
 
-重新下载公开权重：
+如需重建本地推理环境，可重新下载相关公开权重。当前 GLM API 流程不需要下载 Qwen 权重；以下 Qwen 和 SAM2 命令仅供兼容旧实验时使用：
 
 ```bash
 python -m modelscope.cli.cli download Qwen/Qwen3-VL-2B-Instruct \
@@ -382,12 +370,17 @@ RGB inpainting（只修改 completion_mask）
 
 在接入 amodal segmentation 模型之前，不要运行现有 Stage 2，以免生成整块背景而误认为完整物体。虚拟环境已经安装 `diffusers==0.38.0`，为后续按官方 Moebius 实现重构做准备，但 Moebius 权重尚未下载。
 
-## Stage 3：Qwen3-VL 属性提取
+## Stage 3：GLM API 名称与属性提取
 
-默认使用本地的 `models/Qwen3-VL-2B-Instruct/`。普通属性读取 `best_quality.jpg`；Category 还会把局部掩码自动定位回原始帧，提供高亮场景上下文。运行：
+当前正式流程使用 GLM 视觉 API。普通属性读取 `best_quality.jpg`；Category 还会把局部掩码自动定位回原始帧，提供高亮场景上下文。先在 `collector.env` 中配置 API，再运行：
 
 ```bash
-python stage3_attribute.py --tracker sam3
+cp collector.env.example collector.env
+# 编辑 collector.env，填写 VLM_API_KEY
+set -a
+source collector.env
+set +a
+python stage3_attribute.py --tracker sam3 --vlm-backend api
 ```
 
 输出为 `objects/new_library_work/attributes.jsonl`。脚本只读取 SAM3 跟踪 manifest 中登记的实例，不读取仓库自带的 `objects/crops` 或旧物体库。重复运行按图片和提示词版本指纹复用缓存；`--force` 可强制重新标注。
@@ -411,7 +404,7 @@ python dedup_tree.py --regenerate
 
 `stage4_dedup.py` 负责生成 ViT-L/14 嵌入；`dedup_tree.py` 按以下顺序生成可编辑树：
 
-去重不再对候选对调用 VLM。Qwen 只负责每个物体的一次属性标注；随后按类别一致、受控属性相似度和 CLIP 视觉相似度生成候选，再由 complete-link 形成可编辑簇并交给人工审核。已有人工合并和拒绝决定继续保留。这样避免物体数量增加后产生大量成对 Qwen 推理。
+去重不再对候选对调用 VLM。GLM 只负责每个物体的名称、WordNet 消歧和属性标注；随后按类别一致、受控属性相似度和 CLIP 视觉相似度生成候选，再由 complete-link 形成可编辑簇并交给人工审核。已有人工合并和拒绝决定继续保留。这样避免物体数量增加后产生大量成对 VLM 推理。
 
 候选缓存和最终物体库都保存来源指纹，指纹覆盖实例 ID、代表图、属性和分类路径。图片、跟踪结果或人工属性变化后，旧候选不能通过 `--reuse-candidates` 继续套用，旧物体库也不会再作为最新结果展示；需要重新运行完整去重或“补全属性并生成树”。人工去重决定只有在物体库重建成功后才提交，失败会自动回滚决定文件。
 
@@ -509,7 +502,7 @@ http://127.0.0.1:8888/dedup
 3. 按可调质量评分只保留 `best_quality`；
 4. 接入amodal segmentation，得到完整轮廓；
 5. 按 `amodal_mask - visible_mask` 重构RGB补全；
-6. 用 Qwen 对质量最高图做属性标注并人工修改；
+6. 用 GLM 视觉 API 对质量最高图做名称和属性标注并人工修改；
 7. 用 CLIP 召回相似实例，在 `/dedup` 人工确认后构建最终库。
 
 ## 效果评估报告
@@ -535,42 +528,51 @@ python reports/compare_semantic_prompts.py
 ## 已知限制
 
 - SAM 3.1 multiplex 在 8 GB 显存上的实际容量与速度仍取决于分辨率、帧数和物体数，大数据建议先用 `--limit 1` 验证；
-- 8GB显存不适合直接运行Qwen3-VL-8B；
 - Stage 2目前不是正确的amodal RGB补全实现；
 - CLIP 相似度不能可靠判断细粒度同款物体，所以只召回候选、不自动合并；
 - VLM 的类别、颜色、材质、形状和纹理均为视觉估计，必须人工复核；
 - 首帧审核窗口尚无自由画笔和掩码拆分。
 
-## VLM 属性标注后端：本地 Qwen3-VL 或 OpenAI 兼容 API
+## VLM 属性标注后端：GLM API
 
-`stage3_attribute.py` 的属性标注推理可切换后端，WordNet 消歧和受控属性树校验始终在本地完成，两种后端写出的 `attributes.jsonl` 结构与缓存逻辑完全一致：
+当前正式流程通过 OpenAI 兼容的 `/chat/completions` 视觉接口调用 `glm-5.3-flash`。GLM 负责图像理解；WordNet 查询、实体分支约束、候选编号校验和属性树校验始终在本地完成。数采员部署包不携带 Qwen 本地权重。
 
 属性缓存指纹包含后端、API 地址和模型名。切换到 GLM API、更换 API 地址或修改 `VLM_MODEL` 后，旧 VLM 属性缓存会自动失效并重新标注，不需要额外使用 `--force`。
 
-- `--vlm-backend local`（默认）：加载本地 `models/Qwen3-VL-2B-Instruct`（需要 `transformers`、`qwen-vl-utils` 与本地权重）。
-- `--vlm-backend api`：调用 OpenAI 兼容的 `/chat/completions` 视觉接口（例如智谱 `glm-5.3-flash`），依赖已内置的 `vlm_backend.py`，无需 `transformers`/本地 Qwen 权重。命令：
+推荐把配置写入不会提交到 Git 的 `collector.env`，不要直接把密钥写进 README、脚本或命令历史：
 
 ```bash
-export VLM_API_BASE=https://open.bigmodel.cn/api/paas/v4  # 必填
-export VLM_API_KEY=<key>                                   # 必填
-export VLM_MODEL=glm-5.3-flash                             # 可选，默认 glm-5.3-flash（注意连字符）
-export ROBOCOIN_VLM_BACKEND=api            # 让 run_vlm_library_pipeline.py / viewer 任务默认走 API
-.venv/bin/python stage3_attribute.py --vlm-backend api
+cp collector.env.example collector.env
+# 编辑 collector.env：填写 VLM_API_BASE、VLM_API_KEY、VLM_MODEL，
+# 并保持 ROBOCOIN_VLM_BACKEND=api
+./start_collector.sh
 ```
+
+直接从终端运行 Stage 3 时，先加载同一配置文件：
+
+```bash
+set -a
+source collector.env
+set +a
+.venv/bin/python stage3_attribute.py --tracker sam3 --vlm-backend api
+```
+
+代码仍保留 `--vlm-backend local` 作为旧实验兼容入口，但它不属于当前部署方案，也不会包含在 `RoboCOIN-Collector` 中。
 
 可选环境变量：`VLM_API_TIMEOUT`（秒，默认 60）、`VLM_API_MAX_RETRIES`（默认 4，429/5xx/网络错误重试）、`VLM_API_CONCURRENCY`（批量并发请求数，默认 4）、`VLM_API_IMAGE_MAX_EDGE`（发送图片最长边像素，默认 1536）、`VLM_API_IMAGE_QUALITY`（JPEG 质量，默认 85）、`VLM_API_TEMPERATURE`（默认 0.0）、`VLM_API_REASONING_EFFORT`（`low`/`high`/`max`，默认 `low`，置空则不发送）、`VLM_API_THINKING`（如 `enabled`；`glm-5.3-flash` 只接受 `enabled`，置空则不发送）、`VLM_API_TOKEN_SCALE`（把调用方传的 token 预算乘上该系数再作为 `max_tokens`，默认 3，给强制深度思考模型预留推理 token）。发送前图片会按最长边等比缩小并转 JPEG，以控制带宽与费用；本地后端保持 2K 原图不压缩。
 
 ## 审核页中文名词的预翻译
 
-`/review` 里的中文名词默认查 `noun_translations.py` 内置词表；为覆盖新数据集里出现的未知名词，可用轻量文本模型批量预翻译生成 `noun_translations_cache.json`（运行时不再调用 API，离线包同样可用）：
+`/review` 里的中文名词默认查 `noun_translations.py` 内置词表；为覆盖新数据集里出现的未知名词，可用轻量文本模型批量预翻译生成 `noun_translations_cache.json`，页面运行时不再为这些词重复调用 API：
 
 ```bash
-export VLM_API_BASE=https://open.bigmodel.cn/api/paas/v4
-export VLM_API_KEY=<key>
+set -a
+source collector.env
+set +a
 # 默认 glm-4.7-flashx（付费文本模型，实测约 1s/批，已自动关闭思考）；
 # 可选 glm-4.6 / glm-4.5-airx / 免费 glm-4.7-flash：
 #   --model glm-4.7-flashx
 .venv/bin/python precompute_noun_translations.py
 ```
 
-脚本默认用 4 个并发批次翻译（`--concurrency` 或环境变量 `VLM_TRANSLATE_CONCURRENCY` 可调），扫描所有 `objects/tracks/**/initial_sam3_sr_2k/manifest.json` 中出现的英文提示词，只翻译内置词表与已有缓存未覆盖的部分，结果按词合并写入缓存；词表（`NOUN_ZH`）仍优先于缓存。`export_offline_review.py` 导出离线包时会自动带上该缓存文件。
+脚本默认用 4 个并发批次翻译（`--concurrency` 或环境变量 `VLM_TRANSLATE_CONCURRENCY` 可调），扫描所有 `objects/tracks/**/initial_sam3_sr_2k/manifest.json` 中出现的英文提示词，只翻译内置词表与已有缓存未覆盖的部分，结果按词合并写入缓存；词表（`NOUN_ZH`）仍优先于缓存。生成 `RoboCOIN-Collector` 时会一并复制该缓存文件。
