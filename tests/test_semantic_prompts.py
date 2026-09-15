@@ -61,6 +61,11 @@ def test_prompt_uses_all_named_text_sources_and_ignores_other_fields(tmp_path, m
     broad_values = prompts.all_annotation_noun_prompts(video, root)
     assert "hammer" not in broad_values
 
+    context = prompts.annotation_context_for_video(video, root)
+    assert "Put cups beside the plate" in context
+    assert "Move the water bottle" in context
+    assert all("hidden_hammer_camera" not in text for text in context)
+
 
 def test_generated_scene_relations_are_not_object_nouns(monkeypatch):
     monkeypatch.setattr(prompts, "_wordnet", lambda: None)

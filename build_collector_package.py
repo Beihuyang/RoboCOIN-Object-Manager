@@ -40,6 +40,7 @@ CODE_FILES = (
     "super_resolution.py",
     "sam3_official_batch.py",
     "semantic_prompts.py",
+    "noun_review.py",
     "noun_translations.py",
     "noun_translations_cache.json",
     "vlm_backend.py",
@@ -58,6 +59,7 @@ OBJECT_PATHS = (
     "new_library",
     "object_text_links",
     "object_id_registry.json",
+    "prompt_noun_review_cache.json",
 )
 MODEL_FILES = (
     "sam3_weights/sam3.pt",

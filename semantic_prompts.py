@@ -482,6 +482,23 @@ def semantic_noun_prompts(video_path: Path, video_root: Path) -> list[str]:
     return ["object", *nouns]
 
 
+def annotation_context_for_video(
+    video_path: Path, video_root: Path, *, max_items: int = 8, max_chars: int = 500,
+) -> list[str]:
+    """Return compact human-language context for contextual noun review."""
+    dataset_name = dataset_name_from_video(video_path, video_root)
+    dataset_dir = video_root / dataset_name
+    episode_index = _episode_index_from_video(video_path)
+    context = []
+    for value in _dataset_texts(str(dataset_dir.resolve()), episode_index):
+        normalized = " ".join(value.split())[:max_chars]
+        if normalized and normalized not in context:
+            context.append(normalized)
+        if len(context) >= max_items:
+            break
+    return context
+
+
 def combined_semantic_prompt(video_path: Path, video_root: Path) -> str:
     """Return the former comma-joined prompt for A/B comparison only."""
     return ", ".join(all_annotation_noun_prompts(video_path, video_root))

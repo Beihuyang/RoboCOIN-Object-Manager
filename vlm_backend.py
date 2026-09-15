@@ -131,6 +131,8 @@ class OpenAIChatBackend:
         return f"data:image/jpeg;base64,{encoded}"
 
     def _messages(self, images, prompt: str) -> list[dict]:
+        if images is None:
+            return [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
         image_list = images if isinstance(images, (list, tuple)) else [images]
         content = []
         for image in image_list:

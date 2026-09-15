@@ -43,6 +43,8 @@ from project_paths import portable_path, resolve_project_path, same_project_path
 from semantic_prompts import (
     DEFAULT_MAX_SEMANTIC_PROMPTS,
     PROMPT_STRATEGY,
+    annotation_context_for_video,
+    dataset_name_from_video,
     semantic_noun_prompts,
 )
 
@@ -679,7 +681,25 @@ def semantic_discovery_prompts(
     max_semantic_prompts: int = DEFAULT_MAX_SEMANTIC_PROMPTS,
 ) -> list[str]:
     del base_prompt, max_semantic_prompts
-    return semantic_noun_prompts(video_path, VIDEO_ROOT)
+    prompts = semantic_noun_prompts(video_path, VIDEO_ROOT)
+    try:
+        from noun_review import filter_prompts
+    except ImportError:
+        return prompts
+    dataset_name = dataset_name_from_video(video_path, VIDEO_ROOT)
+    source_context = annotation_context_for_video(video_path, VIDEO_ROOT)
+    filtered, report = filter_prompts(prompts, dataset_name, source_context)
+    if report.get("enabled"):
+        dropped_text = ", ".join(
+            item["noun"] for item in report["dropped"]
+        ) or "none"
+        print(
+            f"[noun-review] {dataset_name}: kept {report['kept']}, "
+            f"dropped {len(report['dropped'])} ({dropped_text})"
+        )
+    else:
+        print(f"[noun-review] skipped for {dataset_name}: {report.get('reason')}")
+    return filtered
 
 
 def detect_first_frame(
