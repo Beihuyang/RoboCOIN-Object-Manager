@@ -61,7 +61,10 @@ fi
 
 VENV_PYTHON="$VENV_DIR/bin/python"
 if [[ "$CHECK_ONLY" -eq 0 ]]; then
-    "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel
+    # PyTorch 2.11 requires setuptools<82. Keep the bootstrap toolchain within
+    # that range so repeated setup runs do not upgrade and immediately
+    # downgrade setuptools while resolving the runtime requirements.
+    "$VENV_PYTHON" -m pip install --upgrade pip "setuptools<82" wheel
 
     if ! "$VENV_PYTHON" -c 'import torch, torchvision; assert torch.version.cuda' >/dev/null 2>&1; then
         echo "Installing PyTorch/TorchVision from: $PYTORCH_INDEX_URL"
