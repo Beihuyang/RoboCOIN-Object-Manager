@@ -153,6 +153,7 @@ button.danger { color:#ffdce1; border-color:#70414a; }
 
 <script>
 const palette = ['#ff5c72','#4da3ff','#55d98b','#ffc857','#b57aff','#ff8f4d','#38cad3','#f06ac4','#a8d65e','#8b9cff','#f47560','#67c5a4','#d7a64a','#ad7dd8','#5bb8ef','#e3769d','#9bc56b','#e89b55','#79a7e8','#cb78d4'];
+const MASK_LOAD_CONCURRENCY = 6;
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const canvasWrap = document.getElementById('canvasWrap');
@@ -338,26 +339,44 @@ async function buildVisuals(startPercent=0, endPercent=100, label='正在加载�
   canvas.width = frameImage.naturalWidth;
   canvas.height = frameImage.naturalHeight;
   setViewScale(fitViewScale(),'fit');
-  overlays = await Promise.all(visualObjects.map(async (object, index) => {
-    const maskImage = await loadImage(object.mask_url);
-    const maskCanvas = document.createElement('canvas');
-    maskCanvas.width = canvas.width;
-    maskCanvas.height = canvas.height;
-    const maskCtx = maskCanvas.getContext('2d', {willReadFrequently:true});
-    maskCtx.drawImage(maskImage, 0, 0, canvas.width, canvas.height);
-    const pixels = maskCtx.getImageData(0, 0, canvas.width, canvas.height);
-    const hitData = new Uint8Array(canvas.width * canvas.height);
-    const color = hexToRgb(palette[index % palette.length]);
-    for (let p=0, q=0; p<pixels.data.length; p+=4, q++) {
-      const inside = pixels.data[p] > 127;
-      hitData[q] = inside ? 1 : 0;
-      pixels.data[p] = color[0]; pixels.data[p+1] = color[1]; pixels.data[p+2] = color[2];
-      pixels.data[p+3] = inside ? 165 : 0;
+  overlays = new Array(visualObjects.length);
+  let nextOverlayIndex = 0;
+  async function loadOverlayWorker() {
+    while (nextOverlayIndex < visualObjects.length) {
+      const index = nextOverlayIndex++;
+      const object = visualObjects[index];
+      const maskImage = await loadImage(object.mask_url);
+      const rawBox = object.bbox.map(value => value * renderScale);
+      const x1 = Math.max(0, Math.min(canvas.width - 1, Math.floor(rawBox[0])));
+      const y1 = Math.max(0, Math.min(canvas.height - 1, Math.floor(rawBox[1])));
+      const x2 = Math.max(x1 + 1, Math.min(canvas.width, Math.ceil(rawBox[2])));
+      const y2 = Math.max(y1 + 1, Math.min(canvas.height, Math.ceil(rawBox[3])));
+      const width = x2 - x1, height = y2 - y1;
+      const maskCanvas = document.createElement('canvas');
+      maskCanvas.width = width;
+      maskCanvas.height = height;
+      const maskCtx = maskCanvas.getContext('2d', {willReadFrequently:true});
+      maskCtx.drawImage(maskImage, x1, y1, width, height, 0, 0, width, height);
+      const pixels = maskCtx.getImageData(0, 0, width, height);
+      const hitData = new Uint8Array(width * height);
+      const color = hexToRgb(palette[index % palette.length]);
+      for (let p=0, q=0; p<pixels.data.length; p+=4, q++) {
+        const inside = pixels.data[p] > 127;
+        hitData[q] = inside ? 1 : 0;
+        pixels.data[p] = color[0]; pixels.data[p+1] = color[1]; pixels.data[p+2] = color[2];
+        pixels.data[p+3] = inside ? 165 : 0;
+      }
+      maskCtx.putImageData(pixels, 0, 0);
+      overlays[index] = {
+        object, color:palette[index % palette.length], canvas:maskCanvas,
+        hitData, x:x1, y:y1, width, height,
+      };
+      report(`掩码 ${index + 1}/${session.objects.length}`);
+      await new Promise(resolve => setTimeout(resolve, 0));
     }
-    maskCtx.putImageData(pixels, 0, 0);
-    report(`掩码 ${index + 1}/${session.objects.length}`);
-    return {object, color:palette[index % palette.length], canvas:maskCanvas, hitData};
-  }));
+  }
+  const workerCount = Math.min(MASK_LOAD_CONCURRENCY, visualObjects.length);
+  await Promise.all(Array.from({length:workerCount}, () => loadOverlayWorker()));
   draw();
 }
 
@@ -372,7 +391,7 @@ function draw() {
     const isSelected = selected.has(overlay.object.object_id);
     ctx.save();
     ctx.globalAlpha = isSelected ? 1 : .55;
-    ctx.drawImage(overlay.canvas,0,0);
+    ctx.drawImage(overlay.canvas,overlay.x,overlay.y);
     const b = overlay.object.bbox.map(v => v * renderScale);
     ctx.strokeStyle = overlay.color;
     ctx.lineWidth = (isSelected ? 4 : 1.5)*unit;
@@ -475,7 +494,8 @@ canvas.addEventListener('pointerdown', async event => {
   }
   const x=Math.floor(point.x), y=Math.floor(point.y);
   for (let i=overlays.length-1;i>=0;i--) {
-    if (x>=0&&y>=0&&x<canvas.width&&y<canvas.height&&overlays[i].hitData[y*canvas.width+x]) { toggleSelection(overlays[i].object.object_id); return; }
+    const overlay=overlays[i], localX=x-overlay.x, localY=y-overlay.y;
+    if (localX>=0&&localY>=0&&localX<overlay.width&&localY<overlay.height&&overlay.hitData[localY*overlay.width+localX]) { toggleSelection(overlay.object.object_id); return; }
   }
 });
 canvas.addEventListener('pointermove', event => { if (dragStart) { dragCurrent=canvasPoint(event); draw(); } });
