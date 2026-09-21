@@ -1723,50 +1723,62 @@ def process_video_sam31_mask(
         offload_video_to_cpu=RUNTIME_PROFILE.tracker_offload_video_to_cpu,
         async_loading_frames=RUNTIME_PROFILE.tracker_async_loading_frames,
     )
-    inference_state = tracker.init_state(
-        video_height=video_height,
-        video_width=video_width,
-        num_frames=len(images),
-        offload_state_to_cpu=RUNTIME_PROFILE.tracker_offload_state_to_cpu,
-        offload_video_to_cpu=RUNTIME_PROFILE.tracker_offload_video_to_cpu,
-    )
-    inference_state["images"] = images
     try:
+        extraction = json.loads(
+            (frame_paths[0].parent / "extraction.json").read_text()
+        )
+        source_frame_indices = [
+            int(value) for value in extraction["source_frame_indices"]
+        ]
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        source_frame_indices = list(range(len(frame_paths)))
+    if len(source_frame_indices) != len(frame_paths):
+        raise RuntimeError("Sampled-frame source index map is inconsistent")
+    source_to_sample = {
+        source_index: sample_index
+        for sample_index, source_index in enumerate(source_frame_indices)
+    }
+    masks_by_sample_frame: dict[int, list[tuple[int, dict, np.ndarray]]] = {}
+    for fallback_obj_id, detection in enumerate(detections):
+        obj_id = int(detection.get("object_id", fallback_obj_id))
+        source_frame_index = int(detection.get(
+            "source_frame_index", source_frame_indices[0]
+        ))
+        if source_frame_index not in source_to_sample:
+            raise RuntimeError(
+                f"Discovery source frame {source_frame_index} was not extracted"
+            )
+        mask = detection["mask"].astype(bool)
+        if not mask.any():
+            raise RuntimeError(f"Reviewed mask {obj_id} is empty")
+        masks_by_sample_frame.setdefault(source_to_sample[source_frame_index], []).append(
+            (obj_id, detection, mask)
+        )
+
+    # The dynamic multiplex API can add objects to an existing state only on a
+    # frame that has already been propagated. Human review may introduce new
+    # objects on several discovery frames before propagation starts, so sharing
+    # one state raises "No existing output found for frame ..." on the second
+    # frame. Track each discovery-frame group in an independent state and merge
+    # their object-id keyed outputs afterwards. This also preserves the intended
+    # behavior that an object begins tracking at the frame where it was reviewed.
+    tracking_groups = sorted(masks_by_sample_frame.items())
+    total_steps = sum(
+        len(frame_paths) - sample_frame_index
+        for sample_frame_index, _frame_detections in tracking_groups
+    )
+    completed_steps = 0
+    for sample_frame_index, frame_detections in tracking_groups:
+        inference_state = tracker.init_state(
+            video_height=video_height,
+            video_width=video_width,
+            num_frames=len(images),
+            offload_state_to_cpu=RUNTIME_PROFILE.tracker_offload_state_to_cpu,
+            offload_video_to_cpu=RUNTIME_PROFILE.tracker_offload_video_to_cpu,
+        )
+        inference_state["images"] = images
         try:
-            extraction = json.loads(
-                (frame_paths[0].parent / "extraction.json").read_text()
-            )
-            source_frame_indices = [
-                int(value) for value in extraction["source_frame_indices"]
-            ]
-        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-            source_frame_indices = list(range(len(frame_paths)))
-        if len(source_frame_indices) != len(frame_paths):
-            raise RuntimeError("Sampled-frame source index map is inconsistent")
-        source_to_sample = {
-            source_index: sample_index
-            for sample_index, source_index in enumerate(source_frame_indices)
-        }
-        masks_by_sample_frame: dict[int, list[tuple[int, dict, np.ndarray]]] = {}
-        for fallback_obj_id, detection in enumerate(detections):
-            obj_id = int(detection.get("object_id", fallback_obj_id))
-            source_frame_index = int(detection.get(
-                "source_frame_index", source_frame_indices[0]
-            ))
-            if source_frame_index not in source_to_sample:
-                raise RuntimeError(
-                    f"Discovery source frame {source_frame_index} was not extracted"
-                )
-            mask = detection["mask"].astype(bool)
-            if not mask.any():
-                raise RuntimeError(f"Reviewed mask {obj_id} is empty")
-            masks_by_sample_frame.setdefault(source_to_sample[source_frame_index], []).append(
-                (obj_id, detection, mask)
-            )
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            for sample_frame_index, frame_detections in sorted(
-                masks_by_sample_frame.items()
-            ):
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 with Image.open(frame_paths[sample_frame_index]) as image:
                     discovery_image = np.asarray(image.convert("RGB"))
                 obj_ids = []
@@ -1795,55 +1807,63 @@ def process_video_sam31_mask(
                     masks=torch.stack(initial_masks),
                     add_mask_to_memory=True,
                 )
-            tracker.propagate_in_video_preflight(
-                inference_state,
-                run_mem_encoder=True,
-            )
-            if progress_callback is not None:
-                progress_callback(1, len(frame_paths))
-
-            stream = tracker.propagate_in_video(
-                inference_state=inference_state,
-                start_frame_idx=0,
-                max_frame_num_to_track=max(0, len(frame_paths) - 1),
-                reverse=False,
-                tqdm_disable=True,
-            )
-            for output in tqdm(
-                stream, total=len(frame_paths), desc=video_path.name, leave=False
-            ):
-                frame_index, object_ids, _, masks, object_scores = output
-                frame_index = int(frame_index)
-                if frame_index == 0 or not 0 <= frame_index < len(frame_paths):
-                    continue
-                with Image.open(frame_paths[frame_index]) as image:
-                    frame = np.asarray(image.convert("RGB"))
-                masks = _as_numpy(masks)
-                scores = torch.sigmoid(object_scores).detach().float().cpu().numpy().reshape(-1)
-                if masks.ndim == 4 and masks.shape[1] == 1:
-                    masks = masks[:, 0]
-                for index, obj_id in enumerate(object_ids):
-                    obj_id = int(obj_id)
-                    if (obj_id, frame_index) in packed_masks:
+                tracker.propagate_in_video_preflight(
+                    inference_state,
+                    run_mem_encoder=True,
+                )
+                stream = tracker.propagate_in_video(
+                    inference_state=inference_state,
+                    start_frame_idx=sample_frame_index,
+                    max_frame_num_to_track=max(
+                        0, len(frame_paths) - sample_frame_index - 1
+                    ),
+                    reverse=False,
+                    tqdm_disable=True,
+                )
+                for output in tqdm(
+                    stream,
+                    total=len(frame_paths) - sample_frame_index,
+                    desc=video_path.name,
+                    leave=False,
+                ):
+                    frame_index, object_ids, _, masks, object_scores = output
+                    frame_index = int(frame_index)
+                    if not 0 <= frame_index < len(frame_paths):
                         continue
-                    mask = masks[index] > 0
-                    if not mask.any():
-                        continue
-                    confidence = float(scores[index]) if index < len(scores) else 1.0
-                    tracks.setdefault(obj_id, []).append(make_candidate(
-                        frame_index,
-                        frame_paths[frame_index],
-                        frame,
-                        mask,
-                        confidence,
-                    ))
-                    packed_masks[(obj_id, frame_index)] = pack_mask(mask)
-                if progress_callback is not None:
-                    progress_callback(frame_index + 1, len(frame_paths))
-    finally:
-        del inference_state
-        gc.collect()
-        torch.cuda.empty_cache()
+                    with Image.open(frame_paths[frame_index]) as image:
+                        frame = np.asarray(image.convert("RGB"))
+                    masks = _as_numpy(masks)
+                    scores = torch.sigmoid(object_scores).detach().float().cpu().numpy().reshape(-1)
+                    if masks.ndim == 4 and masks.shape[1] == 1:
+                        masks = masks[:, 0]
+                    for index, obj_id in enumerate(object_ids):
+                        obj_id = int(obj_id)
+                        if (obj_id, frame_index) in packed_masks:
+                            continue
+                        mask = masks[index] > 0
+                        if not mask.any():
+                            continue
+                        confidence = (
+                            float(scores[index]) if index < len(scores) else 1.0
+                        )
+                        tracks.setdefault(obj_id, []).append(make_candidate(
+                            frame_index,
+                            frame_paths[frame_index],
+                            frame,
+                            mask,
+                            confidence,
+                        ))
+                        packed_masks[(obj_id, frame_index)] = pack_mask(mask)
+                    completed_steps += 1
+                    if progress_callback is not None:
+                        progress_callback(
+                            round(len(frame_paths) * completed_steps / max(1, total_steps)),
+                            len(frame_paths),
+                        )
+        finally:
+            del inference_state
+            gc.collect()
+            torch.cuda.empty_cache()
 
     if progress_callback is not None:
         progress_callback(len(frame_paths), len(frame_paths))
