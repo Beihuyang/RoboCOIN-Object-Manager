@@ -185,6 +185,7 @@ let dragCurrent = null;
 let busy = false;
 let activeJobId = null;
 let cancelRequested = false;
+const ACTIVE_BATCH_JOB_KEY = 'robocoinActiveBatchJobId';
 
 function escapeHtml(value){return String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]))}
 let currentProgressPercent = 0;
@@ -305,6 +306,7 @@ async function initialize() {
       return;
     }
     await loadSession(sessions[0].key);
+    await resumeAllTrackingIfNeeded();
   } catch (error) { showToast(error.message, true); statusEl.textContent = '加载失败'; }
 }
 
@@ -588,23 +590,32 @@ function showBatchReport(text) {
 }
 
 async function startAllTracking() {
-  let weights, result=null;
+  let weights;
   try { weights=qualityWeights(); } catch(error) { showToast(error.message,true); return; }
   const count=reviewSessionSummaries.filter(item=>item.tracker_dirty).length;
   if (!count){showToast('没有需要重新跟踪的数据');return}
   if (!confirm(`将只跟踪修改过的 ${count} 个审核会话。\n\n已显示“跟踪已更新”的数据会直接跳过，不重新抽帧或跟踪。是否继续？`)) return;
-  setBusy(true, true);
-  setProgress(0, `SAM 3.1 正在准备跟踪 ${count} 个待更新数据…`);
   try {
     const started=await api('/api/review/job/all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(weights)});
-    activeJobId=started.job_id;
-    cancelJobBtn.disabled=false;
+    await monitorAllTracking(started.job_id, started.dirty_count||count);
+  } catch(error) { showToast(error.message,true); }
+}
+
+async function monitorAllTracking(jobId, count=0) {
+  let result=null;
+  setBusy(true, true);
+  activeJobId=jobId;
+  localStorage.setItem(ACTIVE_BATCH_JOB_KEY,jobId);
+  cancelJobBtn.disabled=false;
+  setProgress(0, count?`SAM 3.1 正在跟踪 ${count} 个待更新数据…`:'正在恢复 SAM 3.1 跟踪进度…');
+  try {
     while (true) {
       await new Promise(resolve=>setTimeout(resolve,2000));
-      result=await api('/api/review/job/'+started.job_id);
+      result=await api('/api/review/job/'+jobId);
       updateJobProgress(result, 'SAM 3.1 正在批量跟踪待更新数据…');
       if (!result.running) break;
     }
+    localStorage.removeItem(ACTIVE_BATCH_JOB_KEY);
     showBatchReport(result.log);
     if (result.cancelled || cancelRequested) {
       setProgress(currentProgressPercent, '批量跟踪已取消');
@@ -622,6 +633,21 @@ async function startAllTracking() {
     if (result && result.log) showBatchReport(result.log);
     showToast(error.message,true);
   } finally { setBusy(false);refreshUI(); }
+}
+
+async function resumeAllTrackingIfNeeded() {
+  const queryJobId=new URLSearchParams(window.location.search).get('job_id');
+  const jobId=queryJobId||localStorage.getItem(ACTIVE_BATCH_JOB_KEY);
+  if(!jobId)return;
+  try {
+    const result=await api('/api/review/job/'+encodeURIComponent(jobId));
+    if(!result.running){localStorage.removeItem(ACTIVE_BATCH_JOB_KEY);return}
+    const count=reviewSessionSummaries.filter(item=>item.tracker_dirty).length;
+    await monitorAllTracking(jobId,count);
+  } catch(error) {
+    localStorage.removeItem(ACTIVE_BATCH_JOB_KEY);
+    showToast('无法恢复批量跟踪进度：'+error.message,true);
+  }
 }
 
 function setBusy(value, cancellable=false) { busy=value; loadingEl.classList.toggle('show',value); selectEl.disabled=value; if(value){currentProgressPercent=0;setProgress(0,'正在处理并保存…');cancelJobBtn.hidden=!cancellable;cancelJobBtn.disabled=true;cancelJobBtn.textContent='取消任务';cancelRequested=false}else{cancelJobBtn.hidden=true;activeJobId=null;cancelRequested=false}if(session)refreshUI(); }

@@ -164,6 +164,78 @@ def test_tracking_revision_guard_keeps_new_edits_dirty(tmp_path, monkeypatch):
     assert saved["tracked_revision"] == 4
 
 
+def _review_cache_fixture(tmp_path, monkeypatch, *, selected_index: int = 1047):
+    directory = tmp_path / "initial_sam3_sr_2k"
+    frame_directory = tmp_path / "first_frame_sr_2k"
+    directory.mkdir()
+    frame_directory.mkdir()
+    frame_path = frame_directory / f"source_{selected_index:06d}.jpg"
+    Image.new("RGB", (12, 12), "white").save(frame_path)
+    (frame_directory / "extraction.json").write_text(json.dumps({
+        "source_frame_index": 0,
+    }))
+    mask_path = directory / "object_0000.png"
+    Image.fromarray(np.full((12, 12), 255, dtype=np.uint8)).save(mask_path)
+    (directory / "manifest.json").write_text(json.dumps({
+        "frame": str(frame_path),
+        "frame_extraction_method": stage1_track_select.FIRST_FRAME_EXTRACTION_METHOD,
+        "discovery_cache_version": stage1_track_select.DISCOVERY_CACHE_VERSION,
+        "discovery_frame": {"source_frame_index": selected_index},
+        "prompt": "object",
+        "prompts": ["object"],
+        "prompt_strategy": stage1_track_select.PROMPT_STRATEGY,
+        "threshold": 0.2,
+        "objects": [{
+            "object_id": 0,
+            "mask": mask_path.name,
+            "bbox": [0, 0, 12, 12],
+            "score": 0.9,
+            "prompt": "object",
+            "source_frame_index": selected_index,
+        }],
+    }))
+    monkeypatch.setattr(
+        stage1_track_select, "initial_mask_dir", lambda _video: directory
+    )
+    return frame_path
+
+
+def test_tracking_accepts_reviewed_nonzero_keyframe(tmp_path, monkeypatch):
+    frame_path = _review_cache_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        stage1_track_select,
+        "semantic_discovery_prompts",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("tracking must not rebuild or VLM-review prompts")
+        ),
+    )
+
+    detections = stage1_track_select.load_cached_initial_masks(
+        Path("video.mp4"), frame_path, "object", 0.2,
+        validate_discovery_settings=False,
+    )
+
+    assert detections is not None
+    assert len(detections) == 1
+    assert detections[0]["source_frame_index"] == 1047
+
+
+def test_discovery_reuse_still_rejects_extraction_frame_mismatch(
+    tmp_path, monkeypatch,
+):
+    frame_path = _review_cache_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        stage1_track_select,
+        "semantic_discovery_prompts",
+        lambda *_args, **_kwargs: ["object"],
+    )
+
+    assert stage1_track_select.load_cached_initial_masks(
+        Path("video.mp4"), frame_path, "object", 0.2,
+        validate_discovery_settings=True,
+    ) is None
+
+
 def test_track_export_failure_keeps_previous_directory(tmp_path, monkeypatch):
     output_root = tmp_path / "tracks"
     output_dir = output_root / "session" / "tracker_sam3"

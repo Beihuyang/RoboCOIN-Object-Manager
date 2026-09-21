@@ -1220,18 +1220,30 @@ def load_cached_initial_masks(
     robot_arm_threshold: float = DEFAULT_ROBOT_ARM_THRESHOLD,
     robot_arm_overlap: float = DEFAULT_ROBOT_ARM_OVERLAP,
 ) -> list[dict] | None:
-    expected_prompts = semantic_discovery_prompts(video_path, prompt)
+    # Discovery cache reuse must still match the current extraction and prompt
+    # settings. Tracking is different: the reviewed manifest is authoritative,
+    # especially after a human adds or switches to a non-zero keyframe. Those
+    # frames share a directory-level extraction.json that may still describe
+    # source frame zero, so comparing against it incorrectly rejects valid masks.
+    # Avoid rebuilding semantic prompts here as well; tracking should consume the
+    # saved review result and must not call the noun-review VLM again.
+    expected_prompts = (
+        semantic_discovery_prompts(video_path, prompt)
+        if validate_discovery_settings else None
+    )
     directory = initial_mask_dir(video_path)
     manifest_path = directory / "manifest.json"
     if not manifest_path.is_file():
         return None
     try:
         manifest = json.loads(manifest_path.read_text())
-        extraction = json.loads((frame_path.parent / "extraction.json").read_text())
+        extraction = None
+        if validate_discovery_settings:
+            extraction = json.loads(
+                (frame_path.parent / "extraction.json").read_text()
+            )
         if (
             not same_project_path(manifest.get("frame", ""), frame_path)
-            or int(manifest.get("discovery_frame", {}).get("source_frame_index", -1))
-            != int(extraction.get("source_frame_index", -2))
             or manifest.get("frame_extraction_method")
             != FIRST_FRAME_EXTRACTION_METHOD
             or manifest.get("discovery_cache_version")
@@ -1239,7 +1251,10 @@ def load_cached_initial_masks(
             or (
                 validate_discovery_settings
                 and (
-                    manifest.get("prompt") != expected_prompts[0]
+                    int(manifest.get("discovery_frame", {}).get(
+                        "source_frame_index", -1
+                    )) != int(extraction.get("source_frame_index", -2))
+                    or manifest.get("prompt") != expected_prompts[0]
                     or manifest.get("prompts") != expected_prompts
                     or manifest.get("prompt_strategy") != PROMPT_STRATEGY
                     or float(manifest.get("threshold")) != threshold
